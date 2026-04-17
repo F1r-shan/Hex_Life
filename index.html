@@ -1,0 +1,1686 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hexagon Grid</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; min-height: 100vh; overflow: hidden; }
+    canvas { display: block; cursor: grab; }
+    canvas.dragging { cursor: grabbing; }
+    canvas.placing  { cursor: crosshair; }
+
+    #seed-panel {
+      position: fixed; top: 16px; right: 16px;
+      background: rgba(0,0,0,0.78);
+      border: 1px solid rgba(255,255,255,0.22);
+      border-radius: 10px; padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 8px;
+      backdrop-filter: blur(6px); z-index: 10; min-width: 210px;
+    }
+    #seed-panel label {
+      color: rgba(255,255,255,0.55); font: 11px/1 sans-serif;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .panel-divider { border: none; border-top: 1px solid rgba(255,255,255,0.12); margin: 2px 0; }
+    #seed-input {
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 6px; color: #fff; font: 14px monospace;
+      padding: 7px 10px; outline: none; width: 100%; transition: border-color 0.2s;
+    }
+    #seed-input:focus { border-color: rgba(255,255,255,0.55); }
+    .panel-btn {
+      background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.22);
+      border-radius: 6px; color: #fff; font: 13px sans-serif;
+      padding: 7px 10px; cursor: pointer; transition: background 0.2s, border-color 0.2s;
+      text-align: center;
+    }
+    .panel-btn:hover { background: rgba(255,255,255,0.20); }
+    #human-btn.active { background: rgba(100,200,100,0.25); border-color: rgba(100,220,100,0.6); color: #7fff7f; }
+    #place-hint { color: rgba(100,220,100,0.85); font: 11px sans-serif; text-align: center; display: none; }
+    #place-hint.visible { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="seed-panel">
+    <label>World Seed</label>
+    <input id="seed-input" type="text" placeholder="e.g. earth, mars…" maxlength="40" />
+    <button id="seed-btn" class="panel-btn">Generate</button>
+    <hr class="panel-divider">
+    <label>Units</label>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <button id="human-btn" class="panel-btn" style="flex:1">+ Add Human</button>
+      <input id="human-qty" type="number" min="1" max="50" value="1"
+        style="width:48px;padding:4px 6px;border-radius:6px;border:1px solid #555;background:#222;color:#eee;font-size:13px;text-align:center;">
+    </div>
+    <div id="place-hint">Click a hex to place — Esc to cancel</div>
+    <button id="emotion-btn" class="panel-btn">Emotions: ON</button>
+    <button id="love-btn" class="panel-btn">Love Lines: ON</button>
+    <button id="zone-btn" class="panel-btn">Village Zones: ON</button>
+    <hr class="panel-divider">
+    <label>Terraform</label>
+    <button id="terraform-btn" class="panel-btn">🖊 Paint Terrain</button>
+    <div id="terrain-selector" style="display:none;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:2px;">
+      <button class="panel-btn terrain-opt" data-idx="0" title="Water" style="font-size:16px;padding:5px 0">🌊</button>
+      <button class="panel-btn terrain-opt" data-idx="1" title="Sand"  style="font-size:16px;padding:5px 0">🏖️</button>
+      <button class="panel-btn terrain-opt" data-idx="2" title="Grass" style="font-size:16px;padding:5px 0">🌿</button>
+      <button class="panel-btn terrain-opt" data-idx="3" title="Rock"  style="font-size:16px;padding:5px 0">🪨</button>
+      <button class="panel-btn terrain-opt" data-idx="4" title="Blocked" style="font-size:16px;padding:5px 0">❌</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas    = document.getElementById('canvas');
+    const ctx       = canvas.getContext('2d');
+    const seedInput  = document.getElementById('seed-input');
+    const seedBtn    = document.getElementById('seed-btn');
+    const humanBtn   = document.getElementById('human-btn');
+    const placeHint  = document.getElementById('place-hint');
+    const emotionBtn = document.getElementById('emotion-btn');
+    const loveBtn    = document.getElementById('love-btn');
+    const zoneBtn    = document.getElementById('zone-btn');
+
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const HEX_SIZE = 40;
+    const BORDER   = 2;
+
+    const TERRAIN = [
+      { name: 'Water',   fill: '#1a4f8a', label: '🌊', walkable: false },
+      { name: 'Sand',    fill: '#c4a44e', label: '🏖️',  walkable: true  },
+      { name: 'Grass',   fill: '#3a7d2c', label: '🌿', walkable: true  },
+      { name: 'Rock',    fill: '#6b6b6b', label: '🪨', walkable: true  },
+      { name: 'Blocked', fill: '#4a0000', label: '❌', walkable: false },
+    ];
+    const terrainOverrides = new Map(); // hex key → terrain object
+
+    // ── Seed ────────────────────────────────────────────────
+    let seedOffset = 0;
+    const terrainCache = new Map();
+    function applySeed(str) {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+      }
+      seedOffset = (h >>> 0) % 100000;
+      terrainCache.clear();
+    }
+
+    // ── Noise ────────────────────────────────────────────────
+    function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    function lerp(a, b, t) { return a + t * (b - a); }
+    function hash2(x, y) {
+      let h = (Math.imul(x + seedOffset, 1619) ^ Math.imul(y + seedOffset, 31337)) >>> 0;
+      h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+      h = Math.imul(h ^ (h >>> 16), 0xd68de2c3) >>> 0;
+      return (h >>> 0) / 0xffffffff;
+    }
+    function valueNoise(x, y) {
+      const ix = Math.floor(x), iy = Math.floor(y);
+      const ux = fade(x - ix),  uy = fade(y - iy);
+      return lerp(lerp(hash2(ix,iy), hash2(ix+1,iy), ux), lerp(hash2(ix,iy+1), hash2(ix+1,iy+1), ux), uy);
+    }
+    function noise(x, y) {
+      return valueNoise(x*0.18, y*0.18)*0.65 + valueNoise(x*0.06, y*0.06)*0.35;
+    }
+    function terrainFor(row, col) {
+      const k = (row << 16) ^ col;
+      const ov = terrainOverrides.get(k);
+      if (ov) return ov;
+      let t = terrainCache.get(k);
+      if (t) return t;
+      const n = noise(col + (row % 2) * 0.5, row);
+      t = n < 0.30 ? TERRAIN[0] : n < 0.42 ? TERRAIN[1] : n < 0.72 ? TERRAIN[2] : TERRAIN[3];
+      terrainCache.set(k, t);
+      return t;
+    }
+
+    // ── Hex geometry ─────────────────────────────────────────
+    const WW = Math.sqrt(3) * HEX_SIZE;
+    const RH = HEX_SIZE * 1.5;
+
+    function hexCenter(row, col) {
+      return { x: col * WW + (row % 2 === 0 ? 0 : WW / 2), y: row * RH };
+    }
+
+    function hexNeighbors(row, col) {
+      const even = row % 2 === 0;
+      return [
+        { row: row-1, col: even ? col-1 : col   },
+        { row: row-1, col: even ? col   : col+1 },
+        { row: row,   col: col-1 },
+        { row: row,   col: col+1 },
+        { row: row+1, col: even ? col-1 : col   },
+        { row: row+1, col: even ? col   : col+1 },
+      ];
+    }
+
+    function screenToHex(sx, sy) {
+      const wx = (sx - canvas.width/2  - camX) / scale;
+      const wy = (sy - canvas.height/2 - camY) / scale;
+      const rowEst = Math.round(wy / RH);
+      let bestRow=0, bestCol=0, bestDist=Infinity;
+      for (let row = rowEst-1; row <= rowEst+1; row++) {
+        const off = row % 2 === 0 ? 0 : WW/2;
+        const colEst = Math.round((wx - off) / WW);
+        for (let col = colEst-1; col <= colEst+1; col++) {
+          const cx = col*WW + off, cy = row*RH;
+          const d = Math.hypot(wx-cx, wy-cy);
+          if (d < bestDist) { bestDist=d; bestRow=row; bestCol=col; }
+        }
+      }
+      return { row: bestRow, col: bestCol };
+    }
+
+    // ── Emotions ─────────────────────────────────────────────
+    let emotionsOn  = true;
+    let loveLinesOn = true;
+    let zonesOn     = true;
+
+    const EMOTIONS = [
+      '😊', '😴', '🤔', '😤', '😂', '😨', '🥳', '😎', '🥺', '😇',
+      'Hi!', 'Tired…', 'Where am I?', 'Nice view!', 'I\'m hungry!',
+      'So peaceful', 'Hello?', 'Keep walking!', '⚔️', '🎵',
+    ];
+
+    const EMOTION_INTERVAL = 4000; // ms between changes
+
+    // Age: 1 real second = 1 year. Dies at 100.
+    const YEARS_PER_SECOND = 1;
+    const MAX_AGE = 100;
+
+    function emojiForAge(age, gender) {
+      if (gender === 'female') {
+        if (age < 13) return '👧';
+        if (age < 60) return '👩';
+        return '👵';
+      } else {
+        if (age < 13) return '👦';
+        if (age < 60) return '👨';
+        return '👴';
+      }
+    }
+
+    // ── Humans ────────────────────────────────────────────────
+    const humans = [];
+    const humanById = new Map();
+    let placingHuman = false;
+    let lastTime = null;
+
+    const WALK_SPEED = 0.8; // hexes per second
+
+    function pickNextTarget(h) {
+      const neighbors = hexNeighbors(h.toRow, h.toCol)
+        .filter(n => terrainFor(n.row, n.col).walkable);
+      if (neighbors.length === 0) return;
+
+      let next;
+      // War movement takes priority: march toward own war particle (rally point)
+      if (!next && h.zoneId && wars.size > 0) {
+        for (const w of wars.values()) {
+          if (w.cidA !== h.zoneId && w.cidB !== h.zoneId) continue;
+          const p = w.particles[h.zoneId];
+          if (p) {
+            const sorted = neighbors.slice().sort((a, b) => {
+              const ca = hexCenter(a.row, a.col);
+              const cb = hexCenter(b.row, b.col);
+              return Math.hypot(ca.x - p.wx, ca.y - p.wy)
+                   - Math.hypot(cb.x - p.wx, cb.y - p.wy);
+            });
+            next = Math.random() < 0.9 ? sorted[0] : sorted[Math.floor(Math.random() * Math.min(2, sorted.length))];
+          }
+          break;
+        }
+      }
+
+      // Love pull (only if not marching to war)
+      if (!next && h.loveId) {
+        const partner = humanById.get(h.loveId);
+        if (partner && !partner.dying) {
+          const sorted = neighbors.slice().sort((a, b) => {
+            const ca = hexCenter(a.row, a.col);
+            const cb = hexCenter(b.row, b.col);
+            return Math.hypot(ca.x - partner.wx, ca.y - partner.wy)
+                 - Math.hypot(cb.x - partner.wx, cb.y - partner.wy);
+          });
+          next = Math.random() < 0.7 ? sorted[0] : sorted[Math.floor(Math.random() * sorted.length)];
+        }
+      }
+
+      // If no partner pull, bias toward bound zone; unbound humans go to nearest building
+      if (!next && buildings.length > 0) {
+        const VILLAGE_PULL_RADIUS = HEX_SIZE * 10;
+        let targetB = null, targetD = Infinity;
+        if (h.zoneId) {
+          // Find nearest building belonging to bound zone
+          for (const b of buildings) {
+            if (b.clusterId !== h.zoneId) continue;
+            const d = Math.hypot(h.wx - b.wx, h.wy - b.wy);
+            if (d < targetD) { targetD = d; targetB = b; }
+          }
+        }
+        if (!targetB) {
+          // Unbound: pull toward nearest building overall
+          for (const b of buildings) {
+            const d = Math.hypot(h.wx - b.wx, h.wy - b.wy);
+            if (d < targetD) { targetD = d; targetB = b; }
+          }
+        }
+        if (targetB && targetD < VILLAGE_PULL_RADIUS) {
+          const sorted = neighbors.slice().sort((a, b) => {
+            const ca = hexCenter(a.row, a.col);
+            const cb = hexCenter(b.row, b.col);
+            return Math.hypot(ca.x - targetB.wx, ca.y - targetB.wy)
+                 - Math.hypot(cb.x - targetB.wx, cb.y - targetB.wy);
+          });
+          const pullStrength = targetD > HEX_SIZE * 4 ? 0.75 : 0.35;
+          next = Math.random() < pullStrength ? sorted[0] : neighbors[Math.floor(Math.random() * neighbors.length)];
+        }
+      }
+
+      if (!next) next = neighbors[Math.floor(Math.random() * neighbors.length)];
+
+      h.row = h.toRow; h.col = h.toCol;
+      h.toRow = next.row; h.toCol = next.col;
+      h.t = 0;
+      const fc = hexCenter(h.row, h.col);
+      const tc = hexCenter(h.toRow, h.toCol);
+      h.fromX = fc.x; h.fromY = fc.y;
+      h.toX   = tc.x; h.toY   = tc.y;
+    }
+
+    function randomEmotion() {
+      return EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)];
+    }
+
+    const BABY_COOLDOWN          = 9;  // default seconds between births
+    const BABY_COOLDOWN_BUILDING = 3;  // near a building
+    const BABY_CHANCE    = 0.25; // probability per second when close enough
+    const BABY_MAX_AGE_F = 45;   // max age for female to have baby
+    const BABY_MAX_AGE_M = 60;
+
+    function addHuman(row, col, age = 0, gender = null, zoneId = null) {
+      const { x, y } = hexCenter(row, col);
+      const resolvedZone = zoneId ?? zoneCluserIdAt(x, y);
+      const human = {
+        row, col, toRow: row, toCol: col, t: 1, wx: x, wy: y,
+        fromX: x, fromY: y, toX: x, toY: y,
+        id: Date.now() + Math.random(),
+        emotion: randomEmotion(),
+        emotionAt: performance.now(),
+        emotionAlpha: 1,
+        age,
+        gender: gender ?? (Math.random() < 0.5 ? 'male' : 'female'),
+        dying: false,
+        dyingAlpha: 1,
+        loveId: null,
+        zoneId: resolvedZone,
+        lastBabyAt: -BABY_COOLDOWN,
+        birthAnim: null,
+      };
+      humans.push(human);
+      humanById.set(human.id, human);
+    }
+
+    // Find the nearest walkable hex to world coords (wx, wy)
+    function nearestWalkableHex(wx, wy) {
+      const rowEst = Math.round(wy / RH);
+      const candidates = [];
+      for (let row = rowEst - 2; row <= rowEst + 2; row++) {
+        const off = row % 2 === 0 ? 0 : WW / 2;
+        const colEst = Math.round((wx - off) / WW);
+        for (let col = colEst - 2; col <= colEst + 2; col++) {
+          if (!terrainFor(row, col).walkable) continue;
+          const cx = col * WW + off, cy = row * RH;
+          candidates.push({ row, col, d: Math.hypot(wx - cx, wy - cy) });
+        }
+      }
+      if (!candidates.length) return null;
+      candidates.sort((a, b) => a.d - b.d);
+      return candidates[0];
+    }
+
+    // ── Buildings & Zones ────────────────────────────────────
+    const buildings = [];
+    const BUILDING_EMOJIS = ['🏠', '🏡', '🏘️', '⛺'];
+    const BUILD_DIST   = Math.sqrt(3) * HEX_SIZE * 2;
+    const BUILD_EXCL   = Math.sqrt(3) * HEX_SIZE * 3;
+    const BUILD_CHANCE = 0.008;
+    const ZONE_RADIUS  = HEX_SIZE * 4.5; // world-space radius per building
+    const ZONE_MERGE   = ZONE_RADIUS * 2; // buildings closer than this merge zones
+
+    // Zone names: clusterId → string
+    const zoneNames = new Map();
+    const ZONE_NAME_PRE  = ['Oak','Ash','Stone','River','Hill','Iron','Green','Silver','Dawn','Dusk','Frost','Storm','Red','Black','White'];
+    const ZONE_NAME_SUF  = ['haven','hold','wick','ford','stead','keep','vale','moor','bridge','gate','field','brook','wood','cross','fall'];
+    function makeZoneName() {
+      const p = ZONE_NAME_PRE[Math.floor(Math.random() * ZONE_NAME_PRE.length)];
+      const s = ZONE_NAME_SUF[Math.floor(Math.random() * ZONE_NAME_SUF.length)];
+      return p + s;
+    }
+    function zoneNameFor(clusterId) {
+      if (!zoneNames.has(clusterId)) zoneNames.set(clusterId, makeZoneName());
+      return zoneNames.get(clusterId);
+    }
+
+    // Returns the clusterId of the zone the world point (wx,wy) is in, or null
+    function zoneCluserIdAt(wx, wy) {
+      const rowEst = Math.round(wy / RH);
+      const off = rowEst % 2 === 0 ? 0 : WW / 2;
+      const colEst = Math.round((wx - off) / WW);
+      let best = null, bestD = Infinity;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const r = rowEst + dr, c = colEst + dc;
+        const { x: cx, y: cy } = hexCenter(r, c);
+        const d = Math.hypot(wx - cx, wy - cy);
+        if (d < bestD) { bestD = d; best = `${r},${c}`; }
+      }
+      return (best && hexClusterMap.get(best)) || null;
+    }
+
+    // ── Wars ────────────────────────────────────────────────────
+    const wars = new Map(); // warKey → { cidA, cidB, startTime }
+    function warKey(a, b) { return a < b ? `${a}|${b}` : `${b}|${a}`; }
+    function atWar(a, b) { return wars.has(warKey(a, b)); }
+    function declareWar(a, b, now) {
+      const k = warKey(a, b);
+      if (!wars.has(k)) {
+        const bA = buildings.find(b2 => b2.clusterId === a) ?? { wx: 0, wy: 0 };
+        const bB = buildings.find(b2 => b2.clusterId === b) ?? { wx: 0, wy: 0 };
+        wars.set(k, {
+          cidA: a, cidB: b, startTime: now, firstFormedAt: null,
+          particles: {
+            [a]: { wx: bA.wx, wy: bA.wy, memberIds: new Set() },
+            [b]: { wx: bB.wx, wy: bB.wy, memberIds: new Set() },
+          }
+        });
+      }
+    }
+    function endWar(a, b) {
+      const k = warKey(a, b);
+      const w = wars.get(k);
+      if (w) {
+        for (const p of Object.values(w.particles))
+          for (const id of p.memberIds) {
+            const h = humanById.get(id);
+            if (h) h.warGrouped = false;
+          }
+      }
+      wars.delete(k);
+    }
+
+    // Set of "row,col" strings belonging to any village zone
+    let zoneHexes = new Set();
+    let hexClusterMap = new Map(); // hexKey → clusterId
+    let touchingPairsCache = new Set();
+    let touchingPairsDirty = true;
+    let zoneRenderCache = { hexTierFill: new Map(), hexTierBorder: new Map(), hexRoot: new Map() };
+    let zoneRenderDirty = true;
+
+    function recomputeZones() {
+      zoneHexes = new Set();
+      hexClusterMap = new Map();
+      if (!buildings.length) return;
+
+      // Union-Find to group buildings into villages (isolated buildings never merge)
+      const parent = buildings.map((_, i) => i);
+      function find(i) { return parent[i] === i ? i : (parent[i] = find(parent[i])); }
+      for (let i = 0; i < buildings.length; i++)
+        for (let j = i + 1; j < buildings.length; j++)
+          if (buildings[i].clusterId && buildings[i].clusterId === buildings[j].clusterId &&
+              Math.hypot(buildings[i].wx - buildings[j].wx, buildings[i].wy - buildings[j].wy) < ZONE_MERGE)
+            parent[find(i)] = find(j);
+
+      // Group by root
+      const villages = new Map();
+      buildings.forEach((b, i) => {
+        const r = find(i);
+        if (!villages.has(r)) villages.set(r, []);
+        villages.get(r).push(b);
+      });
+
+      for (const [, group] of villages) {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const b of group) {
+          minX = Math.min(minX, b.wx - ZONE_RADIUS);
+          maxX = Math.max(maxX, b.wx + ZONE_RADIUS);
+          minY = Math.min(minY, b.wy - ZONE_RADIUS);
+          maxY = Math.max(maxY, b.wy + ZONE_RADIUS);
+        }
+        const rs = Math.floor(minY / RH) - 1, re = Math.ceil(maxY / RH) + 1;
+        for (let row = rs; row <= re; row++) {
+          const off = row % 2 === 0 ? 0 : WW / 2;
+          const cs = Math.floor((minX - off) / WW) - 1;
+          const ce = Math.ceil((maxX - off) / WW) + 1;
+          for (let col = cs; col <= ce; col++) {
+            const cx = col * WW + off, cy = row * RH;
+            if (!terrainFor(row, col).walkable) continue;
+            for (const b of group) {
+              if (Math.hypot(cx - b.wx, cy - b.wy) <= ZONE_RADIUS) {
+                const hk = `${row},${col}`;
+                zoneHexes.add(hk);
+                hexClusterMap.set(hk, b.clusterId);
+                break;
+              }
+            }
+          }
+        }
+      }
+      touchingPairsDirty = true;
+      zoneRenderDirty = true;
+    }
+
+    // Settlement tiers by hex count
+    const SETTLEMENT_TIERS = [
+      { min: 0,   label: '⛺ Camp',        color: 'rgba(180,220,180,0.90)' },
+      { min: 20,  label: '🏘 Village',     color: 'rgba(160,210,255,0.90)' },
+      { min: 40,  label: '🏙 Town',        color: 'rgba(120,190,255,0.90)' },
+      { min: 60,  label: '🌆 City',        color: 'rgba(255,210,100,0.90)' },
+      { min: 80,  label: '🌇 Metropolis',  color: 'rgba(255,140, 60,0.90)' },
+    ];
+    function settlementTier(hexCount) {
+      let t = SETTLEMENT_TIERS[0];
+      for (const tier of SETTLEMENT_TIERS) { if (hexCount >= tier.min) t = tier; }
+      return t;
+    }
+
+    // Village clusters for labels: { center, size, hexCount }
+    function computeVillageClusters() {
+      if (!buildings.length) return [];
+      const parent = buildings.map((_, i) => i);
+      function find(i) { return parent[i] === i ? i : (parent[i] = find(parent[i])); }
+      for (let i = 0; i < buildings.length; i++)
+        for (let j = i + 1; j < buildings.length; j++)
+          if (buildings[i].clusterId && buildings[i].clusterId === buildings[j].clusterId &&
+              Math.hypot(buildings[i].wx - buildings[j].wx, buildings[i].wy - buildings[j].wy) < ZONE_MERGE)
+            parent[find(i)] = find(j);
+      const villages = new Map();
+      buildings.forEach((b, i) => {
+        const r = find(i);
+        if (!villages.has(r)) villages.set(r, []);
+        villages.get(r).push(b);
+      });
+      // Count zone hexes belonging to each cluster root
+      const hexCounts = new Map();
+      for (const key of zoneHexes) {
+        const [row, col] = key.split(',').map(Number);
+        const { x: kx, y: ky } = hexCenter(row, col);
+        let bestRoot = -1, bestDist = Infinity;
+        buildings.forEach((b, i) => {
+          const d = Math.hypot(kx - b.wx, ky - b.wy);
+          if (d < bestDist) { bestDist = d; bestRoot = find(i); }
+        });
+        if (bestRoot !== -1) hexCounts.set(bestRoot, (hexCounts.get(bestRoot) || 0) + 1);
+      }
+      return [...villages.values()].filter(g => g.length >= 2).map(g => {
+        const root = parent[buildings.indexOf(g[0])];
+        const cid = g[0].clusterId;
+        return {
+          wx: g.reduce((s, b) => s + b.wx, 0) / g.length,
+          wy: g.reduce((s, b) => s + b.wy, 0) / g.length,
+          size: g.length,
+          hexCount: hexCounts.get(root) || 0,
+          clusterId: cid,
+        };
+      });
+    }
+
+    function buildingNear(wx, wy) {
+      for (const b of buildings) {
+        if (Math.hypot(wx - b.wx, wy - b.wy) < BUILD_EXCL) return b;
+      }
+      return null;
+    }
+
+    function humanNearBuilding(h) {
+      for (const b of buildings) {
+        if (Math.hypot(h.wx - b.wx, h.wy - b.wy) < BUILD_EXCL) return true;
+      }
+      return false;
+    }
+
+    function breakBond(a, b) {
+      if (a) { a.loveId = null; a.partAnim = { wx: a.wx, wy: a.wy, alpha: 1 }; }
+      if (b) { b.loveId = null; b.partAnim = { wx: b.wx, wy: b.wy, alpha: 1 }; }
+    }
+
+    function removeHumanAt(row, col) {
+      const idx = humans.findIndex(h => h.row === row && h.col === col && h.toRow === row && h.toCol === col);
+      if (idx !== -1) { humanById.delete(humans[idx].id); humans.splice(idx, 1); }
+    }
+
+    // ── Spatial grid (rebuilt each frame, shared by updateHumans + drawGrid) ──
+    const CELL = WW * 4; // ~4 hex widths per cell
+    let spatialGrid = new Map();
+    function rebuildSpatialGrid() {
+      spatialGrid = new Map();
+      for (const h of humans) {
+        if (h.dying) continue;
+        const cx = Math.floor(h.wx / CELL), cy = Math.floor(h.wy / CELL);
+        const k = `${cx},${cy}`;
+        if (!spatialGrid.has(k)) spatialGrid.set(k, []);
+        spatialGrid.get(k).push(h);
+      }
+    }
+    function nearbyHumans(wx, wy, radius) {
+      const cx0 = Math.floor((wx - radius) / CELL), cx1 = Math.floor((wx + radius) / CELL);
+      const cy0 = Math.floor((wy - radius) / CELL), cy1 = Math.floor((wy + radius) / CELL);
+      const result = [];
+      for (let cx = cx0; cx <= cx1; cx++)
+        for (let cy = cy0; cy <= cy1; cy++) {
+          const list = spatialGrid.get(`${cx},${cy}`);
+          if (list) for (const h of list) result.push(h);
+        }
+      return result;
+    }
+
+    function updateHumans(dt, now) {
+      // Rebuild spatial grid once per frame
+      rebuildSpatialGrid();
+
+      for (let i = humans.length - 1; i >= 0; i--) {
+        const h = humans[i];
+
+        // Death fade-out
+        if (h.dying) {
+          h.dyingAlpha -= dt * 0.8;
+          if (h.dyingAlpha <= 0) {
+            if (h.loveId) breakBond(null, humanById.get(h.loveId));
+            humans.splice(i, 1);
+            humanById.delete(h.id);
+          }
+          continue;
+        }
+
+        // Age
+        h.age += dt * YEARS_PER_SECOND;
+        if (h.age >= MAX_AGE) { h.dying = true; h.dyingAlpha = 1; continue; }
+
+        // Random early death: risk rises steeply after 50, tiny chance for young
+        const deathRisk = h.age < 5   ? 0.00008 :
+                          h.age < 20  ? 0.00003 :
+                          h.age < 50  ? 0.00006 :
+                          h.age < 65  ? 0.003   :
+                          h.age < 80  ? 0.008   :
+                                        0.02;
+        if (Math.random() < deathRisk * dt) {
+          h.dying = true; h.dyingAlpha = 1;
+          h.emotion = '💀'; h.emotionAt = now;
+          continue;
+        }
+
+        // Clear stale loveId (partner died/removed without cleanup)
+        if (h.loveId) {
+          const _lp = humanById.get(h.loveId);
+          if (!_lp || _lp.dying) h.loveId = null;
+        }
+
+        // Elders walk slower
+        const speed = h.age >= 60 ? WALK_SPEED * 0.5 : WALK_SPEED;
+
+        // Movement (skip for humans absorbed into a war particle)
+        if (!h.warGrouped) {
+          if (h.t < 1) {
+            h.t = Math.min(1, h.t + dt * speed);
+            const st = h.t * h.t * (3 - 2 * h.t);
+            h.wx = lerp(h.fromX, h.toX, st);
+            h.wy = lerp(h.fromY, h.toY, st);
+          } else {
+            pickNextTarget(h);
+          }
+        }
+
+        // Zone membership: leave, re-join, or found a new one
+        if (h.zoneId) {
+          // Small chance to leave current zone (go wandering)
+          if (Math.random() < 0.00015 * dt) {
+            h.zoneId = null;
+            h.emotion = '🚶'; h.emotionAt = now; // brief visual cue
+          }
+        } else {
+          // Unbound: join any zone they walk into
+          const cid = zoneCluserIdAt(h.wx, h.wy);
+          if (cid) {
+            h.zoneId = cid;
+            h.emotion = '😊'; h.emotionAt = now;
+          }
+        }
+
+        // Emotion cycle
+        const eAge = now - h.emotionAt;
+        if (eAge > EMOTION_INTERVAL) {
+          h.emotion   = randomEmotion();
+          h.emotionAt = now;
+        }
+        const fadeMs = 600;
+        if (eAge < fadeMs) {
+          h.emotionAlpha = eAge / fadeMs;
+        } else if (eAge > EMOTION_INTERVAL - fadeMs) {
+          h.emotionAlpha = (EMOTION_INTERVAL - eAge) / fadeMs;
+        } else {
+          h.emotionAlpha = 1;
+        }
+
+        // Skip all social behaviours while absorbed into a war particle
+        if (h.warGrouped) continue;
+
+        // Love: single adults near another single adult may fall in love
+        if (!h.loveId && h.age >= 16) {
+          const LOVE_DIST = Math.sqrt(3) * HEX_SIZE * 2.5;
+          for (const other of nearbyHumans(h.wx, h.wy, LOVE_DIST)) {
+            if (other === h || other.loveId || other.dying || other.age < 16) continue;
+            const dist = Math.hypot(h.wx - other.wx, h.wy - other.wy);
+            const sameGender = h.gender === other.gender;
+            const chance = dt * (sameGender ? 0.05 : 0.4);
+            if (dist < LOVE_DIST && Math.random() < chance) {
+              h.loveId     = other.id;
+              other.loveId = h.id;
+              break;
+            }
+          }
+        }
+
+        // Baby: male+female couple, both fertile, close together, cooldown elapsed
+        if (h.loveId && h.gender === 'female' &&
+            h.age >= 16 && h.age <= BABY_MAX_AGE_F) {
+          const partner = humanById.get(h.loveId);
+          if (partner && !partner.dying &&
+              partner.gender === 'male' &&
+              partner.age >= 16 && partner.age <= BABY_MAX_AGE_M) {
+            const nearBuilding = humanNearBuilding(h) || humanNearBuilding(partner);
+            const cooldown = nearBuilding ? BABY_COOLDOWN_BUILDING : BABY_COOLDOWN;
+            const dist = Math.hypot(h.wx - partner.wx, h.wy - partner.wy);
+            if ((now / 1000 - h.lastBabyAt) >= cooldown &&
+                dist < Math.sqrt(3) * HEX_SIZE * 3.5 && Math.random() < BABY_CHANCE * dt) {
+              const midX = (h.wx + partner.wx) / 2;
+              const midY = (h.wy + partner.wy) / 2;
+              const spot = nearestWalkableHex(midX, midY);
+              if (spot) {
+                // Twins (15%) or triplets (3%)
+                const roll = Math.random();
+                const count = roll < 0.03 ? 3 : roll < 0.18 ? 2 : 1;
+                const candidates = [spot];
+                if (count > 1) {
+                  const extras = hexNeighbors(spot.row, spot.col)
+                    .filter(n => terrainFor(n.row, n.col).walkable);
+                  for (let k = 0; k < count - 1 && k < extras.length; k++)
+                    candidates.push(extras[k]);
+                }
+                for (const s of candidates)
+                  addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', h.zoneId ?? partner.zoneId ?? null);
+                h.lastBabyAt = now / 1000;
+                partner.lastBabyAt = now / 1000;
+                h.birthAnim = { wx: midX, wy: midY, alpha: 1, count };
+              }
+            }
+          }
+        }
+
+        // Building: couple close together, no building nearby, small chance
+        if (h.loveId && h.gender === 'female' && !h.dying) {
+          const partner = humanById.get(h.loveId);
+          if (partner && !partner.dying) {
+            const inZone = zoneHexes.has(`${h.toRow},${h.toCol}`) || zoneHexes.has(`${partner.toRow},${partner.toCol}`);
+            const excl   = inZone ? BUILD_EXCL * 0.55 : BUILD_EXCL;
+            const chance = inZone ? BUILD_CHANCE * 3   : BUILD_CHANCE;
+            const tooClose = buildings.some(b => Math.hypot(h.wx - b.wx, h.wy - b.wy) < excl);
+            const dist = Math.hypot(h.wx - partner.wx, h.wy - partner.wy);
+            if (dist < BUILD_DIST && !tooClose && Math.random() < chance * dt) {
+              const midX = (h.wx + partner.wx) / 2;
+              const midY = (h.wy + partner.wy) / 2;
+              const spot = nearestWalkableHex(midX, midY);
+              if (spot) {
+                const { x: bx, y: by } = hexCenter(spot.row, spot.col);
+                // Inherit clusterId from nearest building in the same zone, or start a new one
+                let clusterId;
+                if (inZone && buildings.length > 0) {
+                  let bestDist = Infinity;
+                  for (const b of buildings) {
+                    const d = Math.hypot(bx - b.wx, by - b.wy);
+                    if (d < bestDist) { bestDist = d; clusterId = b.clusterId; }
+                  }
+                } else {
+                  clusterId = Math.random().toString(36).slice(2);
+                  zoneNameFor(clusterId); // register name immediately
+                  // Couple founds a new zone — always move to it (even if previously bound elsewhere)
+                  h.zoneId = clusterId;
+                  partner.zoneId = clusterId;
+                  h.emotion = '🏗️'; h.emotionAt = now;
+                }
+                buildings.push({
+                  row: spot.row, col: spot.col, wx: bx, wy: by,
+                  emoji: BUILDING_EMOJIS[Math.floor(Math.random() * BUILDING_EMOJIS.length)],
+                  clusterId,
+                });
+                recomputeZones();
+              }
+            }
+          }
+        }
+
+        // Parting: couple may drift apart over time
+        if (h.loveId && Math.random() < 0.0005 * dt) {
+          const partner = humanById.get(h.loveId);
+          breakBond(h, partner);
+        }
+
+        // Straying: partnered adult may fall for a nearby different person
+        if (h.loveId && h.age >= 16 && Math.random() < 0.002 * dt) {
+          const STRAY_DIST = Math.sqrt(3) * HEX_SIZE * 2;
+          const strayPartner = humanById.get(h.loveId);
+          for (const other of nearbyHumans(h.wx, h.wy, STRAY_DIST)) {
+            if (other === h || other === strayPartner || other.dying || other.age < 16) continue;
+            const dist = Math.hypot(h.wx - other.wx, h.wy - other.wy);
+            if (dist < STRAY_DIST) {
+              breakBond(h, strayPartner);
+              if (other.loveId) {
+                const otherOld = humanById.get(other.loveId);
+                breakBond(other, otherOld);
+              }
+              h.loveId     = other.id;
+              other.loveId = h.id;
+              break;
+            }
+          }
+        }
+
+        // Decay birth sparkle
+        if (h.birthAnim) {
+          h.birthAnim.alpha -= dt * 0.6;
+          if (h.birthAnim.alpha <= 0) h.birthAnim = null;
+        }
+
+        // Decay part sparkle
+        if (h.partAnim) {
+          h.partAnim.alpha -= dt * 0.7;
+          if (h.partAnim.alpha <= 0) h.partAnim = null;
+        }
+      }
+
+      // ── War ─────────────────────────────────────────────────
+      // Recompute touching zone pairs only when zones changed
+      if (touchingPairsDirty) {
+        touchingPairsCache = new Set();
+        for (const [key, cid] of hexClusterMap) {
+          const comma = key.indexOf(',');
+          const row = +key.slice(0, comma), col = +key.slice(comma + 1);
+          const even = row % 2 === 0;
+          const neighbors = [
+            `${row},${col+1}`, `${row+1},${even?col:col+1}`, `${row+1},${even?col-1:col}`,
+            `${row},${col-1}`, `${row-1},${even?col-1:col}`, `${row-1},${even?col:col+1}`,
+          ];
+          for (const nk of neighbors) {
+            const ncid = hexClusterMap.get(nk);
+            if (ncid && ncid !== cid) touchingPairsCache.add(warKey(cid, ncid) + ':' + cid + ':' + ncid);
+          }
+        }
+        touchingPairsDirty = false;
+      }
+      const touchingPairs = touchingPairsCache;
+
+      // Chance to declare war on touching pairs
+      for (const entry of touchingPairs) {
+        const parts = entry.split(':');
+        const cidA = parts[1], cidB = parts[2];
+        if (!atWar(cidA, cidB) && Math.random() < 0.006 * dt) {
+          declareWar(cidA, cidB, now);
+          // Notify soldiers with ⚔️
+          for (const h of humans) {
+            if (!h.dying && (h.zoneId === cidA || h.zoneId === cidB)) {
+              h.emotion = '⚔️'; h.emotionAt = now;
+            }
+          }
+        }
+      }
+
+      // ── War particle system ──────────────────────────────────
+      const MERGE_R   = HEX_SIZE * 6;    // absorb radius
+      const CONTACT_R = HEX_SIZE * 2.5;  // clash distance
+      const WAR_SPD   = WW * 3.5;        // particle speed px/s (fast & visible)
+      const KILL_RATE = 1.2;             // kills per second per side when clashing
+
+      for (const [k, w] of wars) {
+        const pA = w.particles[w.cidA];
+        const pB = w.particles[w.cidB];
+
+        // Snap particle to centroid of its living zone humans each tick
+        for (const p of [pA, pB]) {
+          const cid = p === pA ? w.cidA : w.cidB;
+          let sx = 0, sy = 0, cnt = 0;
+          for (const h of humans) {
+            if (!h.dying && h.zoneId === cid) { sx += h.wx; sy += h.wy; cnt++; }
+          }
+          if (cnt > 0 && p.memberIds.size === 0) {
+            // Not yet in combat — track centroid so humans find the rally point
+            p.wx = sx / cnt; p.wy = sy / cnt;
+          }
+        }
+
+        // Absorb nearby zone humans into their particle
+        for (const h of humans) {
+          if (h.dying || !h.zoneId) continue;
+          const myCid = h.zoneId === w.cidA ? w.cidA : h.zoneId === w.cidB ? w.cidB : null;
+          if (!myCid) continue;
+          const p = w.particles[myCid];
+          if (h.warGrouped) {
+            h.wx = p.wx; h.wy = p.wy; // keep in sync
+          } else {
+            const d = Math.hypot(h.wx - p.wx, h.wy - p.wy);
+            if (d < MERGE_R) { p.memberIds.add(h.id); h.warGrouped = true; h.wx = p.wx; h.wy = p.wy; }
+          }
+        }
+
+        // Clean dead members
+        for (const p of [pA, pB])
+          for (const id of [...p.memberIds])
+            if (!humanById.get(id) || humanById.get(id).dying) p.memberIds.delete(id);
+
+        // Both sides formed — wait for rally (≥3 soldiers or 4s elapsed) then charge
+        const formed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
+        if (formed && !w.firstFormedAt) w.firstFormedAt = now;
+        const readyToCharge = formed && (
+          (pA.memberIds.size >= 3 && pB.memberIds.size >= 3) ||
+          (w.firstFormedAt && now - w.firstFormedAt >= 4000)
+        );
+        const dx = pB.wx - pA.wx, dy = pB.wy - pA.wy;
+        const dist = Math.hypot(dx, dy);
+
+        if (readyToCharge && dist > CONTACT_R && dist > 0) {
+          const step = WAR_SPD * dt;
+          pA.wx += (dx / dist) * step; pA.wy += (dy / dist) * step;
+          pB.wx -= (dx / dist) * step; pB.wy -= (dy / dist) * step;
+          // Sync grouped humans
+          for (const h of humans) {
+            if (!h.warGrouped || !h.zoneId) continue;
+            const myCid = h.zoneId === w.cidA ? w.cidA : h.zoneId === w.cidB ? w.cidB : null;
+            if (myCid) { const p = w.particles[myCid]; h.wx = p.wx; h.wy = p.wy; }
+          }
+        }
+
+        // Clash: fast kills when particles touch
+        if (readyToCharge && dist <= CONTACT_R) {
+          w.clashing = true;
+          for (const p of [pA, pB]) {
+            const kills = Math.floor(KILL_RATE * dt + Math.random());
+            for (let kk = 0; kk < kills && p.memberIds.size > 0; kk++) {
+              const ids = [...p.memberIds];
+              const victim = humanById.get(ids[Math.floor(Math.random() * ids.length)]);
+              if (victim && !victim.dying) {
+                victim.dying = true; victim.dyingAlpha = 1;
+                victim.warGrouped = false;
+                victim.emotion = '💀'; victim.emotionAt = now;
+                p.memberIds.delete(victim.id);
+              }
+            }
+          }
+        } else {
+          w.clashing = false;
+        }
+
+        // End war
+        const aAlive = humans.some(p => !p.dying && p.zoneId === w.cidA);
+        const bAlive = humans.some(p => !p.dying && p.zoneId === w.cidB);
+        const stillTouch = [...touchingPairs].some(e => e.startsWith(k));
+        if (!aAlive || !bAlive || !stillTouch) { endWar(w.cidA, w.cidB); }
+      }
+
+      // Remove zones whose cluster has no living residents (skip clusters actively at war)
+      if (buildings.length > 0) {
+        const activeClusters = new Set(
+          humans.filter(p => !p.dying && p.zoneId).map(p => p.zoneId)
+        );
+        const warClusters = new Set();
+        for (const w of wars.values()) { warClusters.add(w.cidA); warClusters.add(w.cidB); }
+        const before = buildings.length;
+        for (let i = buildings.length - 1; i >= 0; i--) {
+          const cid = buildings[i].clusterId;
+          if (cid && !activeClusters.has(cid) && !warClusters.has(cid)) {
+            buildings.splice(i, 1);
+          }
+        }
+        if (buildings.length !== before) {
+          recomputeZones();
+          // Clean up names and wars for removed clusters
+          for (const cid of zoneNames.keys()) {
+            if (!buildings.some(b => b.clusterId === cid)) zoneNames.delete(cid);
+          }
+          for (const [k, w] of wars) {
+            if (!buildings.some(b => b.clusterId === w.cidA) ||
+                !buildings.some(b => b.clusterId === w.cidB)) wars.delete(k);
+          }
+        }
+      }
+
+      // ── Zone splitting: larger zones have higher chance to split ──
+      if (buildings.length >= 2) {
+        // Group buildings by cluster
+        const clusterBuildingMap = new Map();
+        for (const b of buildings) {
+          if (!b.clusterId) continue;
+          if (!clusterBuildingMap.has(b.clusterId)) clusterBuildingMap.set(b.clusterId, []);
+          clusterBuildingMap.get(b.clusterId).push(b);
+        }
+        // Count zone hexes per cluster
+        const clusterHexCount = new Map();
+        for (const cid of hexClusterMap.values())
+          clusterHexCount.set(cid, (clusterHexCount.get(cid) || 0) + 1);
+
+        const warZones = new Set();
+        for (const w of wars.values()) { warZones.add(w.cidA); warZones.add(w.cidB); }
+
+        let splitOccurred = false;
+        for (const [cid, blist] of clusterBuildingMap) {
+          if (blist.length < 2) continue;
+          if (warZones.has(cid)) continue;
+          const hexCount = clusterHexCount.get(cid) || 0;
+          if (Math.random() >= hexCount * 0.00025 * dt) continue;
+
+          // Split along axis of greater spatial variance
+          const mx = blist.reduce((s, b) => s + b.wx, 0) / blist.length;
+          const my = blist.reduce((s, b) => s + b.wy, 0) / blist.length;
+          const varX = blist.reduce((s, b) => s + (b.wx - mx) ** 2, 0);
+          const varY = blist.reduce((s, b) => s + (b.wy - my) ** 2, 0);
+          const groupA = [], groupB = [];
+          for (const b of blist)
+            (varX >= varY ? b.wx < mx : b.wy < my) ? groupA.push(b) : groupB.push(b);
+          if (!groupA.length || !groupB.length) continue;
+
+          const newCid = Math.random().toString(36).slice(2);
+          zoneNameFor(newCid);
+          for (const b of groupB) b.clusterId = newCid;
+          splitOccurred = true;
+        }
+
+        if (splitOccurred) {
+          recomputeZones();
+          // Rebind humans whose position now falls in the new cluster
+          for (const h of humans) {
+            if (!h.zoneId) continue;
+            const nowCid = zoneCluserIdAt(h.wx, h.wy);
+            if (nowCid && nowCid !== h.zoneId) h.zoneId = nowCid;
+          }
+        }
+      }
+    }
+
+    // ── Camera ───────────────────────────────────────────────
+    let camX = 0, camY = 0, scale = 1;
+    let isDragging = false, dragStartX = 0, dragStartY = 0;
+
+    // ── Drawing ──────────────────────────────────────────────
+    function hexCorners(cx, cy, size) {
+      const pts = [];
+      for (let i = 0; i < 6; i++) {
+        const a = Math.PI / 180 * (60 * i - 30);
+        pts.push({ x: cx + size * Math.cos(a), y: cy + size * Math.sin(a) });
+      }
+      return pts;
+    }
+
+    function drawHex(cx, cy, size, terrain) {
+      const corners = hexCorners(cx, cy, size);
+      ctx.beginPath();
+      ctx.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
+      ctx.closePath();
+      ctx.fillStyle = terrain.fill;
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = BORDER / scale;
+      ctx.stroke();
+      if (scale > 0.5) {
+        const fs = Math.max(10, size * 0.55);
+        ctx.font = `${fs}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(terrain.label, cx, cy);
+      }
+    }
+
+    function drawHuman(h, now) {
+      if (h.warGrouped) return; // absorbed into war particle
+      const size = HEX_SIZE;
+      const cx = h.wx, cy = h.wy;
+      const baseAlpha = h.dyingAlpha ?? 1;
+
+      // Walking bob (elders bob less)
+      const moving = h.t < 1;
+      const bobAmp = h.age >= 60 ? 0.06 : 0.12;
+      const bob = moving ? Math.abs(Math.sin(now * 0.008)) * size * bobAmp : 0;
+
+      ctx.save();
+      ctx.globalAlpha = baseAlpha;
+
+      // Shadow
+      ctx.save();
+      ctx.globalAlpha = baseAlpha * 0.35;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy + size * 0.25, size * 0.22, size * 0.09, 0, 0, Math.PI * 2);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+      ctx.restore();
+
+      // Human emoji (age + gender)
+      const humanEmoji = emojiForAge(h.age, h.gender);
+      const fs = Math.max(10, size * 0.58);
+      ctx.font = `${fs}px serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(humanEmoji, cx, cy - size * 0.08 - bob);
+
+      // Age badge
+      const genderSymbol = h.gender === 'female' ? '♀' : '♂';
+      const ageText = genderSymbol + Math.floor(h.age);
+      const badgeFs = Math.max(6, size * 0.22);
+      ctx.font = `bold ${badgeFs}px sans-serif`;
+      const badgeW = ctx.measureText(ageText).width + badgeFs * 0.6;
+      const badgeH = badgeFs * 1.4;
+      const bx = cx + size * 0.22;
+      const by = cy - size * 0.38 - bob;
+      // Badge color: gender tint fades to red with age
+      const ageRatio = h.age / MAX_AGE;
+      const isFemale = h.gender === 'female';
+      const br = Math.round(lerp(isFemale ? 200 : 60,  220, ageRatio));
+      const bg = Math.round(lerp(isFemale ? 100 : 140, 50,  ageRatio));
+      const bb = Math.round(lerp(isFemale ? 160 : 220, 50,  ageRatio));
+      ctx.beginPath();
+      ctx.roundRect(bx - badgeW/2, by - badgeH/2, badgeW, badgeH, badgeH/2);
+      ctx.fillStyle = `rgb(${br},${bg},${bb})`;
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(ageText, bx, by);
+
+      ctx.restore();
+
+      // Emotion bubble
+      if (emotionsOn) {
+        const alpha = (h.emotionAlpha ?? 1) * baseAlpha;
+        if (alpha > 0.01) {
+          const bubbleY = cy - size * 0.82 - bob;
+          const text = h.emotion;
+          const isEmoji = /\p{Emoji}/u.test(text) && text.length <= 2;
+          const efs = isEmoji ? Math.max(10, size * 0.48) : Math.max(8, size * 0.28);
+          ctx.font = `${efs}px ${isEmoji ? 'serif' : 'sans-serif'}`;
+
+          const tw = ctx.measureText(text).width;
+          const pad = size * 0.13;
+          const bw = tw + pad * 2;
+          const bh = efs + pad * 1.4;
+          const bx = cx - bw / 2;
+          const by = bubbleY - bh / 2;
+          const r  = bh / 2;
+
+          ctx.save();
+          ctx.globalAlpha = alpha;
+
+          // Bubble background
+          ctx.beginPath();
+          ctx.moveTo(bx + r, by);
+          ctx.lineTo(bx + bw - r, by);
+          ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
+          ctx.lineTo(bx + bw, by + bh - r);
+          ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
+          // Small tail pointing down
+          ctx.lineTo(cx + size * 0.08, by + bh);
+          ctx.lineTo(cx, by + bh + size * 0.16);
+          ctx.lineTo(cx - size * 0.08, by + bh);
+          ctx.lineTo(bx + r, by + bh);
+          ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
+          ctx.lineTo(bx, by + r);
+          ctx.quadraticCurveTo(bx, by, bx + r, by);
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(255,255,255,0.92)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+          ctx.lineWidth = 0.8 / scale;
+          ctx.stroke();
+
+          // Text
+          ctx.fillStyle = '#222';
+          ctx.font = `${efs}px ${isEmoji ? 'serif' : 'sans-serif'}`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, cx, bubbleY);
+
+          ctx.restore();
+        }
+      }
+    }
+
+    function drawGrid(now) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.translate(canvas.width/2 + camX, canvas.height/2 + camY);
+      ctx.scale(scale, scale);
+
+      const viewW   = canvas.width  / scale;
+      const viewH   = canvas.height / scale;
+      const originX = -canvas.width/2  / scale - camX / scale;
+      const originY = -canvas.height/2 / scale - camY / scale;
+
+      const colStart = Math.floor(originX / WW) - 1;
+      const colEnd   = Math.ceil((originX + viewW) / WW) + 1;
+      const rowStart = Math.floor(originY / RH) - 1;
+      const rowEnd   = Math.ceil((originY + viewH) / RH) + 1;
+
+      for (let row = rowStart; row < rowEnd; row++) {
+        for (let col = colStart; col < colEnd; col++) {
+          const { x: cx, y: cy } = hexCenter(row, col);
+          drawHex(cx, cy, HEX_SIZE, terrainFor(row, col));
+        }
+      }
+
+      // Draw village zone hex fills + border
+      if (zonesOn && zoneHexes.size > 0) {
+        const TIER_FILLS = [
+          'rgba( 60,140,255,0.32)',  // Camp
+          'rgba( 50,130,255,0.38)',  // Village
+          'rgba( 30,100,255,0.44)',  // Town
+          'rgba(220,170, 30,0.38)',  // City
+          'rgba(220, 80, 20,0.42)',  // Metropolis
+        ];
+        const TIER_BORDERS = [
+          'rgba(120,190,255,0.90)',
+          'rgba( 90,170,255,1.00)',
+          'rgba( 60,140,255,1.00)',
+          'rgba(250,210, 50,1.00)',
+          'rgba(255,130, 50,1.00)',
+        ];
+
+        // Build hex→root and hex→tierIdx maps (cached, rebuilt only when zones change)
+        if (zoneRenderDirty && buildings.length) {
+          const hexRoot  = new Map(); // key → cluster root index
+          const hexTierFill   = new Map();
+          const hexTierBorder = new Map();
+          const parent2 = buildings.map((_, i) => i);
+          function find2(i) { return parent2[i] === i ? i : (parent2[i] = find2(parent2[i])); }
+          for (let i = 0; i < buildings.length; i++)
+            for (let j = i + 1; j < buildings.length; j++)
+              if (buildings[i].clusterId && buildings[i].clusterId === buildings[j].clusterId &&
+                  Math.hypot(buildings[i].wx - buildings[j].wx, buildings[i].wy - buildings[j].wy) < ZONE_MERGE)
+                parent2[find2(i)] = find2(j);
+          const rootHexCount = new Map();
+          for (const key of zoneHexes) {
+            const [rr, cc] = key.split(',').map(Number);
+            const { x: kx, y: ky } = hexCenter(rr, cc);
+            let bestRoot = -1, bestDist = Infinity;
+            buildings.forEach((b, i) => {
+              const d = Math.hypot(kx - b.wx, ky - b.wy);
+              if (d < bestDist) { bestDist = d; bestRoot = find2(i); }
+            });
+            hexRoot.set(key, bestRoot);
+            rootHexCount.set(bestRoot, (rootHexCount.get(bestRoot) || 0) + 1);
+          }
+          for (const key of zoneHexes) {
+            const root = hexRoot.get(key);
+            const hc = rootHexCount.get(root) || 0;
+            const tierIdx = SETTLEMENT_TIERS.reduce((idx, t, i) => hc >= t.min ? i : idx, 0);
+            hexTierFill.set(key, TIER_FILLS[tierIdx]);
+            hexTierBorder.set(key, TIER_BORDERS[tierIdx]);
+          }
+          zoneRenderCache = { hexTierFill, hexTierBorder, hexRoot };
+          zoneRenderDirty = false;
+        }
+        const { hexTierFill, hexTierBorder, hexRoot } = zoneRenderCache;
+
+        // Fill (group by color)
+        const fillGroups = new Map();
+        for (const [key, fill] of hexTierFill) {
+          if (!fillGroups.has(fill)) fillGroups.set(fill, []);
+          fillGroups.get(fill).push(key);
+        }
+        for (const [fill, keys] of fillGroups) {
+          ctx.fillStyle = fill;
+          for (const key of keys) {
+            const comma = key.indexOf(',');
+            const row = +key.slice(0, comma), col = +key.slice(comma + 1);
+            const { x: cx, y: cy } = hexCenter(row, col);
+            if (cx < originX - HEX_SIZE * 2 || cx > originX + viewW + HEX_SIZE * 2) continue;
+            if (cy < originY - HEX_SIZE * 2 || cy > originY + viewH + HEX_SIZE * 2) continue;
+            const corners = hexCorners(cx, cy, HEX_SIZE);
+            ctx.beginPath();
+            ctx.moveTo(corners[0].x, corners[0].y);
+            for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+
+        // Borders: outer edge = tier color, zone-to-zone = black or red (war)
+        const tierBorderEdges = new Map();
+        const zoneBoundaryEdges = [];   // [x1,y1,x2,y2, isWar(0/1), ...]
+
+        ctx.lineWidth = 2.5 / scale;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        for (const key of zoneHexes) {
+          const comma = key.indexOf(',');
+          const row = +key.slice(0, comma), col = +key.slice(comma + 1);
+          const { x: cx, y: cy } = hexCenter(row, col);
+          if (cx < originX - HEX_SIZE * 3 || cx > originX + viewW + HEX_SIZE * 3) continue;
+          if (cy < originY - HEX_SIZE * 3 || cy > originY + viewH + HEX_SIZE * 3) continue;
+          const corners = hexCorners(cx, cy, HEX_SIZE);
+          const even = row % 2 === 0;
+          const myCid = hexClusterMap.get(key);
+          const myRoot = hexRoot.get(key);
+          const bcolor = hexTierBorder.get(key);
+          const edgeNeighborKeys = [
+            `${row},${col+1}`,
+            `${row+1},${even ? col : col+1}`,
+            `${row+1},${even ? col-1 : col}`,
+            `${row},${col-1}`,
+            `${row-1},${even ? col-1 : col}`,
+            `${row-1},${even ? col : col+1}`,
+          ];
+          for (let i = 0; i < 6; i++) {
+            const nk = edgeNeighborKeys[i];
+            const x1 = corners[i].x, y1 = corners[i].y;
+            const x2 = corners[(i+1)%6].x, y2 = corners[(i+1)%6].y;
+            if (!zoneHexes.has(nk)) {
+              if (!tierBorderEdges.has(bcolor)) tierBorderEdges.set(bcolor, []);
+              tierBorderEdges.get(bcolor).push(x1, y1, x2, y2);
+            } else if (hexRoot.get(nk) !== myRoot) {
+              const nCid = hexClusterMap.get(nk);
+              const isWar = myCid && nCid && atWar(myCid, nCid) ? 1 : 0;
+              zoneBoundaryEdges.push(x1, y1, x2, y2, isWar);
+            }
+          }
+        }
+        // Draw outer tier borders
+        for (const [bcolor, coords] of tierBorderEdges) {
+          ctx.strokeStyle = bcolor;
+          ctx.beginPath();
+          for (let i = 0; i < coords.length; i += 4) {
+            ctx.moveTo(coords[i], coords[i+1]);
+            ctx.lineTo(coords[i+2], coords[i+3]);
+          }
+          ctx.stroke();
+        }
+        // Draw zone-to-zone boundaries: black = peace, red = war
+        if (zoneBoundaryEdges.length) {
+          ctx.lineWidth = 3 / scale;
+          for (const [isWar, stroke] of [[0, 'rgba(0,0,0,0.85)'], [1, 'rgba(220,30,30,0.95)']]) {
+            ctx.strokeStyle = stroke;
+            ctx.beginPath();
+            for (let i = 0; i < zoneBoundaryEdges.length; i += 5) {
+              if (zoneBoundaryEdges[i+4] !== isWar) continue;
+              ctx.moveTo(zoneBoundaryEdges[i], zoneBoundaryEdges[i+1]);
+              ctx.lineTo(zoneBoundaryEdges[i+2], zoneBoundaryEdges[i+3]);
+            }
+            ctx.stroke();
+          }
+          // ⚔️ icon at midpoint of each war border segment
+          ctx.font = `${Math.max(8, HEX_SIZE * 0.3)}px serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          const drawn = new Set();
+          for (let i = 0; i < zoneBoundaryEdges.length; i += 5) {
+            if (!zoneBoundaryEdges[i+4]) continue;
+            const mx = (zoneBoundaryEdges[i] + zoneBoundaryEdges[i+2]) / 2;
+            const my = (zoneBoundaryEdges[i+1] + zoneBoundaryEdges[i+3]) / 2;
+            const mk = `${Math.round(mx/HEX_SIZE)},${Math.round(my/HEX_SIZE)}`;
+            if (!drawn.has(mk)) { drawn.add(mk); ctx.fillText('⚔️', mx, my); }
+          }
+        }
+
+        // Settlement labels
+        for (const v of computeVillageClusters()) {
+          const tier = settlementTier(v.hexCount);
+          const name = zoneNameFor(v.clusterId);
+          const residents = humans.filter(p => !p.dying && p.zoneId === v.clusterId).length;
+          const lfs = Math.max(7, HEX_SIZE * 0.28);
+          const sfs = Math.max(6, HEX_SIZE * 0.22);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          // Zone name
+          ctx.font = `bold ${lfs}px sans-serif`;
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fillText(name, v.wx, v.wy - HEX_SIZE * 3.8);
+          // Tier label
+          ctx.font = `${sfs}px sans-serif`;
+          ctx.fillStyle = tier.color;
+          ctx.fillText(`${tier.label}  👤${residents}`, v.wx, v.wy - HEX_SIZE * 3.0);
+        }
+      }
+
+      // Draw buildings
+      for (const b of buildings) {
+        const bfs = Math.max(10, HEX_SIZE * 0.62);
+        ctx.font = `${bfs}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.emoji, b.wx, b.wy - HEX_SIZE * 0.05);
+      }
+
+      // Draw war particles + love-style connecting stroke
+      if (wars.size > 0) {
+        const pulse = 0.55 + 0.45 * Math.sin(now * 0.005);
+        for (const w of wars.values()) {
+          const pA = w.particles[w.cidA];
+          const pB = w.particles[w.cidB];
+
+          const bothFormed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
+
+          // War line — dashed red like love line, ⚔️ at midpoint
+          if (bothFormed) {
+            const mx = (pA.wx + pB.wx) / 2, my = (pA.wy + pB.wy) / 2;
+            ctx.save();
+            ctx.globalAlpha = pulse;
+            ctx.strokeStyle = '#ff2020';
+            ctx.lineWidth = 2.5 / scale;
+            ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(pA.wx, pA.wy);
+            ctx.lineTo(pB.wx, pB.wy);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 1;
+            ctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('⚔️', mx, my);
+            // Clash flash burst
+            if (w.clashing) {
+              ctx.globalAlpha = 0.55 + 0.45 * Math.sin(now * 0.04);
+              ctx.beginPath();
+              ctx.arc(mx, my, HEX_SIZE * 1.4, 0, Math.PI * 2);
+              ctx.fillStyle = '#ffcc00';
+              ctx.fill();
+              ctx.globalAlpha = 1;
+              ctx.font = `${Math.max(14, HEX_SIZE * 1.1)}px serif`;
+              ctx.fillText('💥', mx, my);
+            }
+            ctx.restore();
+          }
+
+          // Draw each particle — emoji + count
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          for (const p of [pA, pB]) {
+            const cnt = p.memberIds.size;
+            if (cnt === 0) continue;
+            ctx.font = `${Math.max(12, HEX_SIZE * 0.9)}px serif`;
+            ctx.fillText('⚔️', p.wx, p.wy);
+            ctx.font = `bold ${Math.max(8, HEX_SIZE * 0.35)}px sans-serif`;
+            ctx.fillStyle = '#fff';
+            ctx.fillText(`×${cnt}`, p.wx, p.wy + HEX_SIZE * 1.0);
+          }
+        }
+      }
+
+      // Draw love connections
+      const drawn = new Set();
+      for (const h of humans) { if (!loveLinesOn) break;
+        if (!h.loveId || drawn.has(h.id)) continue;
+        const partner = humanById.get(h.loveId);
+        if (!partner) continue;
+        drawn.add(h.id);
+        drawn.add(partner.id);
+
+        const alpha = Math.min(h.dyingAlpha ?? 1, partner.dyingAlpha ?? 1);
+        const pulse = 0.55 + 0.45 * Math.sin(now * 0.004); // gentle pulse
+
+        ctx.save();
+        ctx.globalAlpha = alpha * pulse;
+
+        // Dashed pink stroke
+        ctx.beginPath();
+        ctx.moveTo(h.wx, h.wy);
+        ctx.lineTo(partner.wx, partner.wy);
+        ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
+        ctx.strokeStyle = '#ff6eb0';
+        ctx.lineWidth = 2.5 / scale;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Heart emoji at midpoint
+        const mx = (h.wx + partner.wx) / 2;
+        const my = (h.wy + partner.wy) / 2;
+        const hfs = Math.max(8, HEX_SIZE * 0.42);
+        ctx.font = `${hfs}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.globalAlpha = alpha;
+        ctx.fillText('❤️', mx, my);
+
+        ctx.restore();
+      }
+
+      // Part sparkles (💔)
+      for (const h of humans) {
+        if (!h.partAnim) continue;
+        const { wx, wy, alpha } = h.partAnim;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const pfs = Math.max(8, HEX_SIZE * 0.45);
+        ctx.font = `${pfs}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('💔', wx, wy - HEX_SIZE * 0.5 * (1 - alpha));
+        ctx.restore();
+      }
+
+      // Birth sparkles
+      for (const h of humans) {
+        if (!h.birthAnim) continue;
+        const { wx, wy, alpha, count } = h.birthAnim;
+        const rise = HEX_SIZE * 0.7 * (1 - alpha);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        const bfs = Math.max(10, HEX_SIZE * 0.52);
+        ctx.font = `${bfs}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const babies = '👶'.repeat(count ?? 1);
+        ctx.fillText(babies, wx, wy - rise);
+        ctx.restore();
+      }
+
+      // Draw humans on top
+      for (const h of humans) drawHuman(h, now);
+
+      ctx.restore();
+    }
+
+    // ── Animation loop ────────────────────────────────────────
+    function loop(now) {
+      if (lastTime !== null) {
+        const dt = (now - lastTime) / 1000;
+        updateHumans(dt, now);
+      }
+      lastTime = now;
+      drawGrid(now);
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // ── Seed panel ────────────────────────────────────────────
+    function generate() {
+      applySeed(seedInput.value.trim());
+      terrainOverrides.clear();
+      camX = 0; camY = 0; scale = 1;
+      humans.length = 0;
+      humanById.clear();
+      buildings.length = 0;
+      zoneHexes = new Set();
+      hexClusterMap = new Map();
+      touchingPairsDirty = true;
+      zoneRenderDirty = true;
+      zoneRenderCache = { hexTierFill: new Map(), hexTierBorder: new Map(), hexRoot: new Map() };
+      drawGrid(performance.now());
+    }
+    seedBtn.addEventListener('click', generate);
+    seedInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') generate(); });
+
+    // ── Human placement ───────────────────────────────────────
+    humanBtn.addEventListener('click', () => {
+      placingHuman = !placingHuman;
+      humanBtn.classList.toggle('active', placingHuman);
+      placeHint.classList.toggle('visible', placingHuman);
+      canvas.classList.toggle('placing', placingHuman);
+    });
+
+    function cancelPlacing() {
+      placingHuman = false;
+      humanBtn.classList.remove('active');
+      placeHint.classList.remove('visible');
+      canvas.classList.remove('placing');
+    }
+
+    emotionBtn.addEventListener('click', () => {
+      emotionsOn = !emotionsOn;
+      emotionBtn.textContent = `Emotions: ${emotionsOn ? 'ON' : 'OFF'}`;
+      emotionBtn.style.opacity = emotionsOn ? '1' : '0.5';
+    });
+
+    loveBtn.addEventListener('click', () => {
+      loveLinesOn = !loveLinesOn;
+      loveBtn.textContent = `Love Lines: ${loveLinesOn ? 'ON' : 'OFF'}`;
+      loveBtn.style.opacity = loveLinesOn ? '1' : '0.5';
+    });
+
+    zoneBtn.addEventListener('click', () => {
+      zonesOn = !zonesOn;
+      zoneBtn.textContent = `Village Zones: ${zonesOn ? 'ON' : 'OFF'}`;
+      zoneBtn.style.opacity = zonesOn ? '1' : '0.5';
+    });
+
+    // ── Terraform ─────────────────────────────────────────────
+    const terraformBtn    = document.getElementById('terraform-btn');
+    const terrainSelector = document.getElementById('terrain-selector');
+    let terraformMode = false;
+    let selectedTerrainIdx = 2; // default Grass
+
+    function setSelectedTerrain(idx) {
+      selectedTerrainIdx = idx;
+      document.querySelectorAll('.terrain-opt').forEach((b, i) => {
+        b.style.background   = i === idx ? 'rgba(255,255,255,0.28)' : '';
+        b.style.borderColor  = i === idx ? 'rgba(255,255,255,0.7)'  : '';
+      });
+    }
+    setSelectedTerrain(2);
+
+    terraformBtn.addEventListener('click', () => {
+      terraformMode = !terraformMode;
+      terraformBtn.textContent   = terraformMode ? '🖊 Painting…' : '🖊 Paint Terrain';
+      terraformBtn.style.background  = terraformMode ? 'rgba(255,200,50,0.22)' : '';
+      terraformBtn.style.borderColor = terraformMode ? 'rgba(255,200,50,0.7)'  : '';
+      terrainSelector.style.display  = terraformMode ? 'grid' : 'none';
+      if (terraformMode) cancelPlacing();
+    });
+
+    document.querySelectorAll('.terrain-opt').forEach((btn, i) => {
+      btn.addEventListener('click', () => setSelectedTerrain(i));
+    });
+
+    function paintTerrain(clientX, clientY) {
+      const { row, col } = screenToHex(clientX, clientY);
+      const k = (row << 16) ^ col;
+      const t = TERRAIN[selectedTerrainIdx];
+      terrainOverrides.set(k, t);
+      terrainCache.set(k, t);
+      recomputeZones();
+      zoneRenderDirty = true;
+      touchingPairsDirty = true;
+    }
+
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { cancelPlacing(); if (terraformMode) { terraformMode = false; terraformBtn.textContent = '🖊 Paint Terrain'; terraformBtn.style.background = ''; terraformBtn.style.borderColor = ''; terrainSelector.style.display = 'none'; } } });
+    document.getElementById('seed-panel').addEventListener('mousedown', (e) => e.stopPropagation());
+
+    canvas.addEventListener('click', (e) => {
+      if (terraformMode) { paintTerrain(e.clientX, e.clientY); return; }
+      if (!placingHuman) return;
+      const { row, col } = screenToHex(e.clientX, e.clientY);
+      const existing = humans.findIndex(h => {
+        const atSrc = h.row === row && h.col === col;
+        const atDst = h.toRow === row && h.toCol === col && h.t > 0.8;
+        return atSrc || atDst;
+      });
+      if (existing !== -1) {
+        humanById.delete(humans[existing].id);
+        humans.splice(existing, 1);
+      } else if (terrainFor(row, col).walkable) {
+        const qty = Math.max(1, parseInt(document.getElementById('human-qty').value) || 1);
+        const candidates = [{ row, col }, ...hexNeighbors(row, col).filter(n => terrainFor(n.row, n.col).walkable)];
+        for (let q = 0; q < qty; q++) {
+          const spot = candidates[q % candidates.length];
+          addHuman(spot.row, spot.col, 18);
+        }
+      }
+    });
+
+    // ── Zoom ──────────────────────────────────────────────────
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zf = e.deltaY < 0 ? 1.1 : 0.9;
+      const mx = e.clientX - canvas.width/2, my = e.clientY - canvas.height/2;
+      const ns = Math.min(10, Math.max(0.1, scale * zf));
+      const r  = ns / scale;
+      camX = mx + (camX - mx) * r;
+      camY = my + (camY - my) * r;
+      scale = ns;
+    }, { passive: false });
+
+    // ── Pan ───────────────────────────────────────────────────
+    let isTerraformDragging = false;
+    canvas.addEventListener('mousedown', (e) => {
+      if (terraformMode) { isTerraformDragging = true; paintTerrain(e.clientX, e.clientY); return; }
+      if (placingHuman) return;
+      isDragging = true;
+      dragStartX = e.clientX - camX;
+      dragStartY = e.clientY - camY;
+      canvas.classList.add('dragging');
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (isTerraformDragging) { paintTerrain(e.clientX, e.clientY); return; }
+      if (!isDragging) return;
+      camX = e.clientX - dragStartX;
+      camY = e.clientY - dragStartY;
+    });
+    window.addEventListener('mouseup', () => {
+      isDragging = false;
+      isTerraformDragging = false;
+      canvas.classList.remove('dragging');
+    });
+
+    // ── Touch ─────────────────────────────────────────────────
+    let lastTouchDist = null;
+    canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        isDragging = true;
+        dragStartX = e.touches[0].clientX - camX;
+        dragStartY = e.touches[0].clientY - camY;
+      } else if (e.touches.length === 2) {
+        lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+      }
+    }, { passive: true });
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      if (e.touches.length === 1 && isDragging) {
+        camX = e.touches[0].clientX - dragStartX;
+        camY = e.touches[0].clientY - dragStartY;
+      } else if (e.touches.length === 2) {
+        const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - canvas.width/2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - canvas.height/2;
+        const ns = Math.min(10, Math.max(0.1, scale * dist / lastTouchDist));
+        const r  = ns / scale;
+        camX = midX + (camX - midX) * r;
+        camY = midY + (camY - midY) * r;
+        scale = ns;
+        lastTouchDist = dist;
+      }
+    }, { passive: false });
+    canvas.addEventListener('touchend', () => { isDragging = false; lastTouchDist = null; });
+
+    window.addEventListener('resize', () => {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+    });
+  </script>
+</body>
+</html>
