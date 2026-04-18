@@ -8,31 +8,34 @@
 </head>
 <body>
   <canvas id="canvas"></canvas>
-  <div id="seed-panel">
-    <label>World Seed</label>
-    <input id="seed-input" type="text" placeholder="e.g. earth, mars…" maxlength="40" />
-    <button id="seed-btn" class="panel-btn">Generate</button>
-    <hr class="panel-divider">
-    <label>Units</label>
-    <div style="display:flex;gap:6px;align-items:center;">
-      <button id="human-btn" class="panel-btn" style="flex:1">+ Add Human</button>
-      <input id="human-qty" type="number" min="1" max="50" value="1"
-        style="width:48px;padding:4px 6px;border-radius:6px;border:1px solid #555;background:#222;color:#eee;font-size:13px;text-align:center;">
+  <div id="right-panels">
+    <div id="seed-panel">
+      <label>World Seed</label>
+      <input id="seed-input" type="text" placeholder="e.g. earth, mars…" maxlength="40" />
+      <button id="seed-btn" class="panel-btn">Generate</button>
+      <hr class="panel-divider">
+      <label>Units</label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button id="human-btn" class="panel-btn" style="flex:1">+ Add Human</button>
+        <input id="human-qty" type="number" min="1" max="50" value="1"
+          style="width:48px;padding:4px 6px;border-radius:6px;border:1px solid #555;background:#222;color:#eee;font-size:13px;text-align:center;">
+      </div>
+      <div id="place-hint">Click a hex to place — Esc to cancel</div>
+      <button id="emotion-btn" class="panel-btn">Emotions: ON</button>
+      <button id="love-btn" class="panel-btn">Love Lines: ON</button>
+      <button id="zone-btn" class="panel-btn">Village Zones: ON</button>
+      <hr class="panel-divider">
+      <label>Terraform</label>
+      <button id="terraform-btn" class="panel-btn">🖊 Paint Terrain</button>
+      <div id="terrain-selector" style="display:none;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:2px;">
+        <button class="panel-btn terrain-opt" data-idx="0" title="Water" style="font-size:16px;padding:5px 0">🌊</button>
+        <button class="panel-btn terrain-opt" data-idx="1" title="Sand"  style="font-size:16px;padding:5px 0">🏖️</button>
+        <button class="panel-btn terrain-opt" data-idx="2" title="Grass" style="font-size:16px;padding:5px 0">🌿</button>
+        <button class="panel-btn terrain-opt" data-idx="3" title="Rock"  style="font-size:16px;padding:5px 0">🪨</button>
+        <button class="panel-btn terrain-opt" data-idx="4" title="Blocked" style="font-size:16px;padding:5px 0">❌</button>
+      </div>
     </div>
-    <div id="place-hint">Click a hex to place — Esc to cancel</div>
-    <button id="emotion-btn" class="panel-btn">Emotions: ON</button>
-    <button id="love-btn" class="panel-btn">Love Lines: ON</button>
-    <button id="zone-btn" class="panel-btn">Village Zones: ON</button>
-    <hr class="panel-divider">
-    <label>Terraform</label>
-    <button id="terraform-btn" class="panel-btn">🖊 Paint Terrain</button>
-    <div id="terrain-selector" style="display:none;grid-template-columns:repeat(5,1fr);gap:4px;margin-top:2px;">
-      <button class="panel-btn terrain-opt" data-idx="0" title="Water" style="font-size:16px;padding:5px 0">🌊</button>
-      <button class="panel-btn terrain-opt" data-idx="1" title="Sand"  style="font-size:16px;padding:5px 0">🏖️</button>
-      <button class="panel-btn terrain-opt" data-idx="2" title="Grass" style="font-size:16px;padding:5px 0">🌿</button>
-      <button class="panel-btn terrain-opt" data-idx="3" title="Rock"  style="font-size:16px;padding:5px 0">🪨</button>
-      <button class="panel-btn terrain-opt" data-idx="4" title="Blocked" style="font-size:16px;padding:5px 0">❌</button>
-    </div>
+    <div id="year-panel">Year 0</div>
   </div>
 
   <script src="script.js"></script>

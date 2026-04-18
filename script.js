@@ -7,6 +7,7 @@
     const emotionBtn = document.getElementById('emotion-btn');
     const loveBtn    = document.getElementById('love-btn');
     const zoneBtn    = document.getElementById('zone-btn');
+    const yearEl     = document.getElementById('year-panel');
 
     canvas.width  = window.innerWidth;
     canvas.height = window.innerHeight;
@@ -136,6 +137,7 @@
     const humanById = new Map();
     let placingHuman = false;
     let lastTime = null;
+    let simYear = 0;
 
     const WALK_SPEED = 0.8; // hexes per second
 
@@ -1573,7 +1575,9 @@
     function loop(now) {
       if (lastTime !== null) {
         const dt = (now - lastTime) / 1000;
+        simYear += dt * YEARS_PER_SECOND;
         updateHumans(dt, now);
+        yearEl.textContent = `Year ${Math.floor(simYear)}`;
       }
       lastTime = now;
       drawGrid(now);
@@ -1583,6 +1587,7 @@
 
     // ── Seed panel ────────────────────────────────────────────
     function generate() {
+      simYear = 0;
       applySeed(seedInput.value.trim());
       terrainOverrides.clear();
       camX = 0; camY = 0; scale = 1;
@@ -1675,7 +1680,7 @@
     }
 
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { cancelPlacing(); if (terraformMode) { terraformMode = false; terraformBtn.textContent = '🖊 Paint Terrain'; terraformBtn.style.background = ''; terraformBtn.style.borderColor = ''; terrainSelector.style.display = 'none'; } } });
-    document.getElementById('seed-panel').addEventListener('mousedown', (e) => e.stopPropagation());
+    document.getElementById('right-panels').addEventListener('mousedown', (e) => e.stopPropagation());
 
     canvas.addEventListener('click', (e) => {
       if (terraformMode) { paintTerrain(e.clientX, e.clientY); return; }
