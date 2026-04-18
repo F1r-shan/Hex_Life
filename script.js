@@ -146,7 +146,7 @@
 
       // Zone members stay inside their zone or allied zones; fall back to all walkable only if trapped
       let neighbors = allWalkable;
-      if (h.zoneId && !h.warGrouped) {
+      if (h.zoneId && !h.warGrouped && h.age >= 16) {
         const zoneOnly = allWalkable.filter(n => {
           const nk = `${n.row},${n.col}`;
           if (!zoneHexes.has(nk)) return false;
@@ -246,7 +246,7 @@
 
     function addHuman(row, col, age = 0, gender = null, zoneId = null) {
       const { x, y } = hexCenter(row, col);
-      const resolvedZone = zoneId ?? zoneCluserIdAt(x, y);
+      const resolvedZone = age >= 16 ? (zoneId ?? zoneCluserIdAt(x, y)) : null;
       const human = {
         row, col, toRow: row, toCol: col, t: 1, wx: x, wy: y,
         fromX: x, fromY: y, toX: x, toY: y,
@@ -600,17 +600,24 @@
         }
 
         // Zone membership: leave if outside zone, join if unbound and inside one
-        if (h.zoneId) {
-          const hk = `${h.toRow},${h.toCol}`;
-          const hkCid = hexClusterMap.get(hk);
-          const outsideOwn = !zoneHexes.has(hk) || hkCid !== h.zoneId;
-          const inAllied = outsideOwn && hkCid && allied(h.zoneId, hkCid);
+        if (h.zoneId && h.age >= 16) {
+          const hkTo   = `${h.toRow},${h.toCol}`;
+          const hkFrom = `${h.row},${h.col}`;
+          const toCid   = hexClusterMap.get(hkTo);
+          const fromCid = hexClusterMap.get(hkFrom);
+          const outsideOwn = toCid !== h.zoneId && fromCid !== h.zoneId;
+          const inAllied = outsideOwn && (allied(h.zoneId, toCid) || allied(h.zoneId, fromCid));
           if (outsideOwn && !inAllied && !h.warGrouped) {
             h.zoneId = null;
             h.emotion = '🚶'; h.emotionAt = now;
           }
-        } else {
-          // Unbound: join any zone they walk into
+          // Single adults occasionally wander off to mix with outsiders
+          if (h.zoneId && !h.loveId && Math.random() < 0.001 * dt) {
+            h.zoneId = null;
+            h.emotion = '🚶'; h.emotionAt = now;
+          }
+        } else if (h.age >= 16) {
+          // Unbound adults: join any zone they walk into
           const cid = zoneCluserIdAt(h.wx, h.wy);
           if (cid) {
             h.zoneId = cid;
@@ -680,7 +687,7 @@
                     candidates.push(extras[k]);
                 }
                 for (const s of candidates)
-                  addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', h.zoneId ?? partner.zoneId ?? null);
+                  addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', null);
                 h.lastBabyAt = now / 1000;
                 partner.lastBabyAt = now / 1000;
                 h.birthAnim = { wx: midX, wy: midY, alpha: 1, count };
@@ -719,6 +726,8 @@
                   // Couple founds a new zone — always move to it (even if previously bound elsewhere)
                   h.zoneId = clusterId;
                   partner.zoneId = clusterId;
+                  // Register immediately so zone pruning doesn't kill it this same frame
+                  zonePopMap.set(clusterId, 2);
                   h.emotion = '🏗️'; h.emotionAt = now;
                 }
                 const eraBuildings = ERAS[clusterEras.get(clusterId) ?? 0].buildings;
@@ -1393,61 +1402,6 @@
         ctx.fillText(b.emoji, b.wx, b.wy - HEX_SIZE * 0.05);
       }
 
-      // Draw war particles + love-style connecting stroke
-      if (wars.size > 0) {
-        const pulse = 0.55 + 0.45 * Math.sin(now * 0.005);
-        for (const w of wars.values()) {
-          const pA = w.particles[w.cidA];
-          const pB = w.particles[w.cidB];
-
-          const bothFormed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
-
-          // War line — dashed red like love line, ⚔️ at midpoint
-          if (bothFormed) {
-            const mx = (pA.wx + pB.wx) / 2, my = (pA.wy + pB.wy) / 2;
-            ctx.save();
-            ctx.globalAlpha = pulse;
-            ctx.strokeStyle = '#ff2020';
-            ctx.lineWidth = 2.5 / scale;
-            ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(pA.wx, pA.wy);
-            ctx.lineTo(pB.wx, pB.wy);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.globalAlpha = 1;
-            ctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('⚔️', mx, my);
-            // Clash flash burst
-            if (w.clashing) {
-              ctx.globalAlpha = 0.55 + 0.45 * Math.sin(now * 0.04);
-              ctx.beginPath();
-              ctx.arc(mx, my, HEX_SIZE * 1.4, 0, Math.PI * 2);
-              ctx.fillStyle = '#ffcc00';
-              ctx.fill();
-              ctx.globalAlpha = 1;
-              ctx.font = `${Math.max(14, HEX_SIZE * 1.1)}px serif`;
-              ctx.fillText('💥', mx, my);
-            }
-            ctx.restore();
-          }
-
-          // Draw each particle — emoji + count
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          for (const p of [pA, pB]) {
-            const cnt = p.memberIds.size;
-            if (cnt === 0) continue;
-            ctx.font = `${Math.max(12, HEX_SIZE * 0.9)}px serif`;
-            ctx.fillText('⚔️', p.wx, p.wy);
-            ctx.font = `bold ${Math.max(8, HEX_SIZE * 0.35)}px sans-serif`;
-            ctx.fillStyle = '#fff';
-            ctx.fillText(`×${cnt}`, p.wx, p.wy + HEX_SIZE * 1.0);
-          }
-        }
-      }
-
       // Draw love connections
       const drawn = new Set();
       for (const h of humans) { if (!loveLinesOn) break;
@@ -1518,6 +1472,61 @@
 
       // Draw humans on top
       for (const h of humans) drawHuman(h, now);
+
+      // Draw war particles above everything in world space (but below screen-space labels)
+      if (wars.size > 0) {
+        const pulse = 0.55 + 0.45 * Math.sin(now * 0.005);
+        for (const w of wars.values()) {
+          const pA = w.particles[w.cidA];
+          const pB = w.particles[w.cidB];
+
+          const bothFormed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
+
+          // War line — dashed red like love line, ⚔️ at midpoint
+          if (bothFormed) {
+            const mx = (pA.wx + pB.wx) / 2, my = (pA.wy + pB.wy) / 2;
+            ctx.save();
+            ctx.globalAlpha = pulse;
+            ctx.strokeStyle = '#ff2020';
+            ctx.lineWidth = 2.5 / scale;
+            ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(pA.wx, pA.wy);
+            ctx.lineTo(pB.wx, pB.wy);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.globalAlpha = 1;
+            ctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('⚔️', mx, my);
+            // Clash flash burst
+            if (w.clashing) {
+              ctx.globalAlpha = 0.55 + 0.45 * Math.sin(now * 0.04);
+              ctx.beginPath();
+              ctx.arc(mx, my, HEX_SIZE * 1.4, 0, Math.PI * 2);
+              ctx.fillStyle = '#ffcc00';
+              ctx.fill();
+              ctx.globalAlpha = 1;
+              ctx.font = `${Math.max(14, HEX_SIZE * 1.1)}px serif`;
+              ctx.fillText('💥', mx, my);
+            }
+            ctx.restore();
+          }
+
+          // Draw each particle — emoji + count
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          for (const p of [pA, pB]) {
+            const cnt = p.memberIds.size;
+            if (cnt === 0) continue;
+            ctx.font = `${Math.max(12, HEX_SIZE * 0.9)}px serif`;
+            ctx.fillText('⚔️', p.wx, p.wy);
+            ctx.font = `bold ${Math.max(8, HEX_SIZE * 0.35)}px sans-serif`;
+            ctx.fillStyle = '#fff';
+            ctx.fillText(`×${cnt}`, p.wx, p.wy + HEX_SIZE * 1.0);
+          }
+        }
+      }
 
       ctx.restore();
 
