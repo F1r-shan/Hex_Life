@@ -69,8 +69,9 @@ A browser simulation with no build step, no dependencies, no server required —
 - Era affects `buildMult`, `cooldownMult`, `killMult`, and which building emojis are placed
 - In wars, each side applies its **own** `killMult` against the enemy
 
-**Zone names**
+**Zone names & colors**
 - `zoneNames: Map<clusterId, string>` — lazy-generated from prefix+suffix word lists via `zoneNameFor(clusterId)`
+- `zoneColors: Map<clusterId, hue>` — deterministic hue (0–360) derived from `clusterId` string hash; rendered as `hsla(hue, 65%, 55%, 0.32)` fill and `hsla(hue, 80%, 70%, 0.95)` border; deleted alongside `zoneNames` when a zone dies
 - `zoneCluserIdAt(wx, wy)` — finds nearest hex center in 3×3 neighborhood, returns its `hexClusterMap` entry
 
 **Alliances**
@@ -78,7 +79,7 @@ A browser simulation with no build step, no dependencies, no server required —
 - `allied(a, b)` — O(1) lookup; `ALLIANCE_DURATION = 10 000 ms`
 - Touching zone pairs form alliances (green border 🤝); allied zone members can walk into each other's territory and join each other's war groups
 - On expiry: soldiers whose `zoneId` matches the ex-ally are released from the war group (`warGrouped = false`)
-- Alliance borders drawn green (5px); war borders drawn red (5px); neutral borders drawn thin black
+- Alliance borders drawn green (5px); war borders drawn red (5px); neutral/zone borders `4.5px`; hex grid border `0.6px` (`BORDER` constant)
 
 **Wars**
 - `wars: Map<warKey, { cidA, cidB, startTime, clashing, firstFormedAt, particles: { [cid]: { wx, wy, memberIds: Set } } }>`
@@ -99,7 +100,13 @@ A browser simulation with no build step, no dependencies, no server required —
 - Panel button "🖊 Paint Terrain" toggles `terraformMode`; drag paints selected terrain type onto hexes
 
 **Draw order per frame** (camera-transform space, then screen space)
-hex tiles → zone fills (tier-colored) → zone borders (neutral/alliance/war) → zone icons (🤝/⚔️) → buildings → love lines → birth/part sparkles → humans → **war particles + war line** → `ctx.restore()` → settlement labels (screen space, always on top)
+hex tiles → zone fills (per-zone color) → zone borders (neutral/alliance/war) → zone icons (🤝/⚔️) → buildings → love lines → birth/part sparkles → humans → **war particles + war line** → `ctx.restore()` → settlement labels (screen space, always on top)
+
+**Main menu**
+- `#main-menu` overlay shown on page load; fades out (`.hidden` class) when Start is clicked
+- Background: a `<canvas id="menu-canvas">` renders the real hex terrain (via `terrainFor`/`hexCenter`) with a random seed, panning right at `WW * 1.2` px/s — no wrapping needed since terrain is infinite
+- `setupMainMenu()` IIFE at bottom of script; calls `applySeed(randomSeed)` on init, then `generate()` on Start click
+- `#right-panels` starts with `opacity:0; pointer-events:none` and is revealed on Start click
 
 **Panel (top-right)**
 - `#right-panels` container holds `#seed-panel` and `#year-panel` as a flex column
@@ -118,6 +125,7 @@ hex tiles → zone fills (tier-colored) → zone borders (neutral/alliance/war) 
 | Constant | Value | Effect |
 |---|---|---|
 | `HEX_SIZE` | 40 | hex radius in px |
+| `BORDER` | 0.6 | hex grid stroke width in px (scaled by `1/scale`) |
 | `WALK_SPEED` | 0.8 | hexes/second (elders 0.5×) |
 | `YEARS_PER_SECOND` | 1 | simulation speed |
 | `MAX_AGE` | 100 | maximum lifespan |

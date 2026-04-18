@@ -1,3 +1,4 @@
+
     const canvas    = document.getElementById('canvas');
     const ctx       = canvas.getContext('2d');
     const seedInput  = document.getElementById('seed-input');
@@ -13,7 +14,7 @@
     canvas.height = window.innerHeight;
 
     const HEX_SIZE = 40;
-    const BORDER   = 2;
+    const BORDER   = 0.6;
 
     const TERRAIN = [
       { name: 'Water',   fill: '#1a4f8a', label: '🌊', walkable: false },
@@ -297,7 +298,17 @@
     const ZONE_MERGE   = ZONE_RADIUS * 2; // buildings closer than this merge zones
 
     // Zone names: clusterId → string
-    const zoneNames = new Map();
+    const zoneNames  = new Map();
+    const zoneColors = new Map(); // clusterId → hue (0–360)
+    function zoneColorFor(clusterId) {
+      if (!zoneColors.has(clusterId)) {
+        // deterministic but visually spread hue from cluster id string
+        let h = 0;
+        for (let i = 0; i < clusterId.length; i++) h = (Math.imul(h * 31 + clusterId.charCodeAt(i), 1) >>> 0);
+        zoneColors.set(clusterId, (h >>> 0) % 360);
+      }
+      return zoneColors.get(clusterId);
+    }
     const ZONE_NAME_PRE  = ['Oak','Ash','Stone','River','Hill','Iron','Green','Silver','Dawn','Dusk','Frost','Storm','Red','Black','White'];
     const ZONE_NAME_SUF  = ['haven','hold','wick','ford','stead','keep','vale','moor','bridge','gate','field','brook','wood','cross','fall'];
     function makeZoneName() {
@@ -693,6 +704,7 @@
                 h.lastBabyAt = now / 1000;
                 partner.lastBabyAt = now / 1000;
                 h.birthAnim = { wx: midX, wy: midY, alpha: 1, count };
+
               }
             }
           }
@@ -738,6 +750,7 @@
                   emoji: eraBuildings[Math.floor(Math.random() * eraBuildings.length)],
                   clusterId,
                 });
+
                 recomputeZones();
               }
             }
@@ -973,7 +986,7 @@
           recomputeZones();
           // Clean up names, eras, and wars for removed clusters
           for (const cid of zoneNames.keys()) {
-            if (!buildings.some(b => b.clusterId === cid)) zoneNames.delete(cid);
+            if (!buildings.some(b => b.clusterId === cid)) { zoneNames.delete(cid); zoneColors.delete(cid); }
           }
           for (const cid of clusterEras.keys()) {
             if (!buildings.some(b => b.clusterId === cid)) clusterEras.delete(cid);
@@ -1209,22 +1222,7 @@
 
       // Draw village zone hex fills + border
       if (zonesOn && zoneHexes.size > 0) {
-        const TIER_FILLS = [
-          'rgba( 60,140,255,0.32)',  // Camp
-          'rgba( 50,130,255,0.38)',  // Village
-          'rgba( 30,100,255,0.44)',  // Town
-          'rgba(220,170, 30,0.38)',  // City
-          'rgba(220, 80, 20,0.42)',  // Metropolis
-        ];
-        const TIER_BORDERS = [
-          'rgba(120,190,255,0.90)',
-          'rgba( 90,170,255,1.00)',
-          'rgba( 60,140,255,1.00)',
-          'rgba(250,210, 50,1.00)',
-          'rgba(255,130, 50,1.00)',
-        ];
-
-        // Build hex→root and hex→tierIdx maps (cached, rebuilt only when zones change)
+        // Build hex→root and hex→color maps (cached, rebuilt only when zones change)
         if (zoneRenderDirty && buildings.length) {
           const hexRoot  = new Map(); // key → cluster root index
           const hexTierFill   = new Map();
@@ -1236,6 +1234,9 @@
               if (buildings[i].clusterId && buildings[i].clusterId === buildings[j].clusterId &&
                   Math.hypot(buildings[i].wx - buildings[j].wx, buildings[i].wy - buildings[j].wy) < ZONE_MERGE)
                 parent2[find2(i)] = find2(j);
+          // map root index → clusterId
+          const rootCluster = new Map();
+          buildings.forEach((b, i) => { if (b.clusterId) rootCluster.set(find2(i), b.clusterId); });
           const rootHexCount = new Map();
           for (const key of zoneHexes) {
             const [rr, cc] = key.split(',').map(Number);
@@ -1250,10 +1251,10 @@
           }
           for (const key of zoneHexes) {
             const root = hexRoot.get(key);
-            const hc = rootHexCount.get(root) || 0;
-            const tierIdx = SETTLEMENT_TIERS.reduce((idx, t, i) => hc >= t.min ? i : idx, 0);
-            hexTierFill.set(key, TIER_FILLS[tierIdx]);
-            hexTierBorder.set(key, TIER_BORDERS[tierIdx]);
+            const cid  = rootCluster.get(root) || String(root);
+            const hue  = zoneColorFor(cid);
+            hexTierFill.set(key,   `hsla(${hue},65%,55%,0.32)`);
+            hexTierBorder.set(key, `hsla(${hue},80%,70%,0.95)`);
           }
           zoneRenderCache = { hexTierFill, hexTierBorder, hexRoot };
           villageClustersCache = computeVillageClusters();
@@ -1328,8 +1329,8 @@
           }
         }
 
-        // 1. Outer tier borders (thin)
-        ctx.lineWidth = 2.5 / scale;
+        // 1. Outer tier borders
+        ctx.lineWidth = 4.5 / scale;
         for (const [bcolor, coords] of tierBorderEdges) {
           ctx.strokeStyle = bcolor;
           ctx.beginPath();
@@ -1340,9 +1341,9 @@
           ctx.stroke();
         }
 
-        // 2. Neutral zone-to-zone borders (thin dark)
+        // 2. Neutral zone-to-zone borders
         if (neutralEdges.length) {
-          ctx.lineWidth = 2.5 / scale;
+          ctx.lineWidth = 4.5 / scale;
           ctx.strokeStyle = 'rgba(0,0,0,0.80)';
           ctx.beginPath();
           for (let i = 0; i < neutralEdges.length; i += 4) {
@@ -1584,6 +1585,103 @@
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
+
+    // ── Main Menu ─────────────────────────────────────────────
+    (function setupMainMenu() {
+      const menu     = document.getElementById('main-menu');
+      const startBtn = document.getElementById('menu-start-btn');
+      const mc       = document.getElementById('menu-canvas');
+      const mctx     = mc.getContext('2d');
+
+      // Pick a random seed for the background world
+      const MENU_SEED = Math.random().toString(36).slice(2, 8);
+      applySeed(MENU_SEED);
+
+      const MENU_SCALE = 1;
+      const PAN_SPEED  = WW * 1.2; // px/s — rightward drift
+      let menuCamX = 0;
+      let menuCamY = 0;
+      let menuRaf;
+      let lastMenuNow = null;
+
+      function resizeMenuCanvas() {
+        mc.width  = window.innerWidth;
+        mc.height = window.innerHeight;
+      }
+
+      function drawMenuHex(cx, cy, terrain) {
+        const corners = hexCorners(cx, cy, HEX_SIZE);
+        mctx.beginPath();
+        mctx.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < 6; i++) mctx.lineTo(corners[i].x, corners[i].y);
+        mctx.closePath();
+        mctx.fillStyle = terrain.fill;
+        mctx.fill();
+        mctx.strokeStyle = 'rgba(255,255,255,0.18)';
+        mctx.lineWidth = 1.2;
+        mctx.stroke();
+        mctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
+        mctx.textAlign = 'center';
+        mctx.textBaseline = 'middle';
+        mctx.fillText(terrain.label, cx, cy);
+      }
+
+      function drawMenuFrame(now) {
+        if (lastMenuNow === null) lastMenuNow = now;
+        const dt = Math.min((now - lastMenuNow) / 1000, 0.1);
+        lastMenuNow = now;
+
+        menuCamX -= PAN_SPEED * dt;
+
+        mctx.clearRect(0, 0, mc.width, mc.height);
+        mctx.save();
+        mctx.translate(mc.width / 2 + menuCamX, mc.height / 2 + menuCamY);
+        mctx.scale(MENU_SCALE, MENU_SCALE);
+
+        const viewW   = mc.width  / MENU_SCALE;
+        const viewH   = mc.height / MENU_SCALE;
+        const originX = -mc.width  / 2 / MENU_SCALE - menuCamX / MENU_SCALE;
+        const originY = -mc.height / 2 / MENU_SCALE - menuCamY / MENU_SCALE;
+
+        const colStart = Math.floor(originX / WW) - 1;
+        const colEnd   = Math.ceil((originX + viewW) / WW) + 1;
+        const rowStart = Math.floor(originY / RH) - 1;
+        const rowEnd   = Math.ceil((originY + viewH) / RH) + 1;
+
+        for (let row = rowStart; row < rowEnd; row++) {
+          for (let col = colStart; col < colEnd; col++) {
+            const { x: cx, y: cy } = hexCenter(row, col);
+            drawMenuHex(cx, cy, terrainFor(row, col));
+          }
+        }
+
+        // Dark vignette overlay so menu text stays readable
+        mctx.restore();
+        const grad = mctx.createRadialGradient(
+          mc.width / 2, mc.height / 2, mc.height * 0.15,
+          mc.width / 2, mc.height / 2, mc.height * 0.85
+        );
+        grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.78)');
+        mctx.fillStyle = grad;
+        mctx.fillRect(0, 0, mc.width, mc.height);
+
+        menuRaf = requestAnimationFrame(drawMenuFrame);
+      }
+
+      resizeMenuCanvas();
+      window.addEventListener('resize', resizeMenuCanvas);
+      menuRaf = requestAnimationFrame(drawMenuFrame);
+
+      startBtn.addEventListener('click', () => {
+        menu.classList.add('hidden');
+        cancelAnimationFrame(menuRaf);
+        const panels = document.getElementById('right-panels');
+        panels.style.opacity = '1';
+        panels.style.pointerEvents = 'auto';
+        generate();
+      });
+    })();
 
     // ── Seed panel ────────────────────────────────────────────
     function generate() {
