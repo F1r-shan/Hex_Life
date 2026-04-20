@@ -1,6 +1,14 @@
 
-    const canvas    = document.getElementById('canvas');
-    const ctx       = canvas.getContext('2d');
+    // ── PixiJS WebGL renderer ────────────────────────────────
+    const app = new PIXI.Application({
+      width: window.innerWidth, height: window.innerHeight,
+      backgroundColor: 0x000000, antialias: true, resolution: 1,
+    });
+    app.ticker.stop(); // we drive the loop manually via rAF
+    Object.assign(app.view.style, { position: 'fixed', top: '0', left: '0', cursor: 'grab' });
+    document.body.insertBefore(app.view, document.body.firstChild);
+    const canvas = app.view; // alias so all existing event handlers work unchanged
+
     const seedInput  = document.getElementById('seed-input');
     const seedBtn    = document.getElementById('seed-btn');
     const humanBtn   = document.getElementById('human-btn');
@@ -8,10 +16,7 @@
     const emotionBtn = document.getElementById('emotion-btn');
     const loveBtn    = document.getElementById('love-btn');
     const zoneBtn    = document.getElementById('zone-btn');
-    const yearEl     = document.getElementById('year-panel');
-
-    canvas.width  = window.innerWidth;
-    canvas.height = window.innerHeight;
+    const yearEl     = document.getElementById('year-text');
 
     const HEX_SIZE = 40;
     const BORDER   = 0.6;
@@ -139,6 +144,23 @@
     let placingHuman = false;
     let lastTime = null;
     let simYear = 0;
+    let paused = false;
+    let simSpeed = 1;
+    let simTime = 0;
+    let labelHitAreas = [];
+
+    // ── Event log ─────────────────────────────────────────────
+    const statsPanel = document.getElementById('stats-panel');
+    const statsLog   = document.getElementById('stats-log');
+    const MAX_LOG = 80;
+    function logEvent(type, msg) {
+      const entry = document.createElement('div');
+      entry.className = `stat-entry ev-${type}`;
+      entry.innerHTML = `<span class="stat-year">Yr ${Math.floor(simYear)}</span>${msg}`;
+      statsLog.appendChild(entry);
+      while (statsLog.children.length > MAX_LOG) statsLog.firstChild.remove();
+      statsLog.scrollTop = statsLog.scrollHeight;
+    }
 
     const WALK_SPEED = 0.8; // hexes per second
 
@@ -337,7 +359,7 @@
     }
 
     // ── Alliances ───────────────────────────────────────────────
-    const ALLIANCE_DURATION = 10000; // ms (10 sim-years)
+    const ALLIANCE_DURATION = 10; // sim-seconds (10 sim-years)
     const alliances = new Map(); // allianceKey → { cidA, cidB, formedAt }
     function allianceKey(a, b) { return a < b ? `${a}|${b}` : `${b}|${a}`; }
     function allied(a, b) { return alliances.has(allianceKey(a, b)); }
@@ -350,10 +372,11 @@
       alliances.delete(allianceKey(a, b));
       const k = warKey(a, b);
       if (!wars.has(k)) {
+        logEvent('war', `⚔️ <b>${zoneNameFor(a)}</b> vs <b>${zoneNameFor(b)}</b>`);
         const bA = buildings.find(b2 => b2.clusterId === a) ?? { wx: 0, wy: 0 };
         const bB = buildings.find(b2 => b2.clusterId === b) ?? { wx: 0, wy: 0 };
         wars.set(k, {
-          cidA: a, cidB: b, startTime: now, firstFormedAt: null,
+          cidA: a, cidB: b, startTime: simTime, firstFormedAt: null,
           particles: {
             [a]: { wx: bA.wx, wy: bA.wy, memberIds: new Set() },
             [b]: { wx: bB.wx, wy: bB.wy, memberIds: new Set() },
@@ -365,6 +388,7 @@
       const k = warKey(a, b);
       const w = wars.get(k);
       if (w) {
+        logEvent('peace', `🕊️ War ended: <b>${zoneNameFor(a)}</b> & <b>${zoneNameFor(b)}</b>`);
         for (const p of Object.values(w.particles))
           for (const id of p.memberIds) {
             const h = humanById.get(id);
@@ -377,7 +401,7 @@
     // Set of "row,col" strings belonging to any village zone
     let zoneHexes = new Set();
     let hexClusterMap = new Map(); // hexKey → clusterId
-    let touchingPairsCache = new Set();
+    let touchingPairsCache = new Map(); // warKey → [cidA, cidB]
     let touchingPairsDirty = true;
     let zoneRenderCache = { hexTierFill: new Map(), hexTierBorder: new Map(), hexRoot: new Map() };
     let zoneRenderDirty = true;
@@ -404,6 +428,9 @@
         villages.get(r).push(b);
       });
 
+      // Each hex is assigned to the zone whose nearest building is closest
+      // (Voronoi-like) so no hex ends up isolated inside the wrong zone.
+      const hexBestDist = new Map();
       for (const [, group] of villages) {
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         for (const b of group) {
@@ -420,17 +447,48 @@
           for (let col = cs; col <= ce; col++) {
             const cx = col * WW + off, cy = row * RH;
             if (!terrainFor(row, col).walkable) continue;
+            let nearestD = Infinity;
             for (const b of group) {
-              if (Math.hypot(cx - b.wx, cy - b.wy) <= ZONE_RADIUS) {
-                const hk = `${row},${col}`;
+              const d = Math.hypot(cx - b.wx, cy - b.wy);
+              if (d < nearestD) nearestD = d;
+            }
+            if (nearestD <= ZONE_RADIUS) {
+              const hk = `${row},${col}`;
+              if (nearestD < (hexBestDist.get(hk) ?? Infinity)) {
+                hexBestDist.set(hk, nearestD);
                 zoneHexes.add(hk);
-                hexClusterMap.set(hk, b.clusterId);
-                break;
+                hexClusterMap.set(hk, group[0].clusterId);
               }
             }
           }
         }
       }
+
+      // Majority filter: a hex with ≤1 same-zone neighbor is isolated —
+      // reassign it to whichever zone dominates its surroundings.
+      for (const hk of zoneHexes) {
+        const comma = hk.indexOf(',');
+        const row = +hk.slice(0, comma), col = +hk.slice(comma + 1);
+        const myCid = hexClusterMap.get(hk);
+        const even = row % 2 === 0;
+        const nbrs = [
+          `${row},${col+1}`, `${row+1},${even?col:col+1}`, `${row+1},${even?col-1:col}`,
+          `${row},${col-1}`, `${row-1},${even?col-1:col}`, `${row-1},${even?col:col+1}`,
+        ];
+        const counts = new Map();
+        for (const nk of nbrs) {
+          const nCid = hexClusterMap.get(nk);
+          if (nCid) counts.set(nCid, (counts.get(nCid) || 0) + 1);
+        }
+        if ((counts.get(myCid) || 0) <= 1) {
+          let bestCid = myCid, bestCount = counts.get(myCid) || 0;
+          for (const [cid, cnt] of counts) {
+            if (cnt > bestCount) { bestCid = cid; bestCount = cnt; }
+          }
+          if (bestCid !== myCid) hexClusterMap.set(hk, bestCid);
+        }
+      }
+
       touchingPairsDirty = true;
       zoneRenderDirty = true;
     }
@@ -559,6 +617,7 @@
     function updateHumans(dt, now) {
       // Rebuild spatial grid once per frame
       rebuildSpatialGrid();
+      let needsRecompute = false;
 
       for (let i = humans.length - 1; i >= 0; i--) {
         const h = humans[i];
@@ -625,7 +684,7 @@
             h.emotion = '🚶'; h.emotionAt = now;
           }
           // Single adults occasionally wander off to mix with outsiders
-          if (h.zoneId && !h.loveId && Math.random() < 0.001 * dt) {
+          if (h.zoneId && !h.loveId && !h.warGrouped && Math.random() < 0.001 * dt) {
             h.zoneId = null;
             h.emotion = '🚶'; h.emotionAt = now;
           }
@@ -683,7 +742,7 @@
             const eraForBaby = ERAS[clusterEras.get(h.zoneId ?? '') ?? clusterEras.get(partner.zoneId ?? '') ?? 0];
             const cooldown = (nearBuilding ? BABY_COOLDOWN_BUILDING : BABY_COOLDOWN) * eraForBaby.cooldownMult;
             const dist = Math.hypot(h.wx - partner.wx, h.wy - partner.wy);
-            if ((now / 1000 - h.lastBabyAt) >= cooldown &&
+            if ((simTime - h.lastBabyAt) >= cooldown &&
                 dist < Math.sqrt(3) * HEX_SIZE * 3.5 && Math.random() < BABY_CHANCE * dt) {
               const midX = (h.wx + partner.wx) / 2;
               const midY = (h.wy + partner.wy) / 2;
@@ -701,8 +760,8 @@
                 }
                 for (const s of candidates)
                   addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', null);
-                h.lastBabyAt = now / 1000;
-                partner.lastBabyAt = now / 1000;
+                h.lastBabyAt = simTime;
+                partner.lastBabyAt = simTime;
                 h.birthAnim = { wx: midX, wy: midY, alpha: 1, count };
 
               }
@@ -737,6 +796,7 @@
                 } else {
                   clusterId = Math.random().toString(36).slice(2);
                   zoneNameFor(clusterId); // register name immediately
+                  logEvent('born', `🏛️ <b>${zoneNameFor(clusterId)}</b> founded`);
                   // Couple founds a new zone — always move to it (even if previously bound elsewhere)
                   h.zoneId = clusterId;
                   partner.zoneId = clusterId;
@@ -751,7 +811,7 @@
                   clusterId,
                 });
 
-                recomputeZones();
+                needsRecompute = true;
               }
             }
           }
@@ -796,21 +856,26 @@
         }
       }
 
+      if (needsRecompute) recomputeZones();
+
       // ── War ─────────────────────────────────────────────────
       // Recompute touching zone pairs only when zones changed
       if (touchingPairsDirty) {
-        touchingPairsCache = new Set();
+        touchingPairsCache = new Map();
         for (const [key, cid] of hexClusterMap) {
           const comma = key.indexOf(',');
           const row = +key.slice(0, comma), col = +key.slice(comma + 1);
           const even = row % 2 === 0;
-          const neighbors = [
+          const neighborKeys = [
             `${row},${col+1}`, `${row+1},${even?col:col+1}`, `${row+1},${even?col-1:col}`,
             `${row},${col-1}`, `${row-1},${even?col-1:col}`, `${row-1},${even?col:col+1}`,
           ];
-          for (const nk of neighbors) {
+          for (const nk of neighborKeys) {
             const ncid = hexClusterMap.get(nk);
-            if (ncid && ncid !== cid) touchingPairsCache.add(warKey(cid, ncid) + ':' + cid + ':' + ncid);
+            if (ncid && ncid !== cid) {
+              const wk = warKey(cid, ncid);
+              if (!touchingPairsCache.has(wk)) touchingPairsCache.set(wk, wk.split('|'));
+            }
           }
         }
         touchingPairsDirty = false;
@@ -819,7 +884,7 @@
 
       // Expire alliances — release any allied soldiers still in a war group
       for (const [k, al] of alliances) {
-        if (now - al.formedAt < ALLIANCE_DURATION) continue;
+        if (simTime - al.formedAt < ALLIANCE_DURATION) continue;
         for (const w of wars.values()) {
           for (const sideCid of [w.cidA, w.cidB]) {
             const alliedZone = al.cidA === sideCid ? al.cidB
@@ -841,14 +906,13 @@
       }
 
       // Chance to declare war or form alliance on touching pairs
-      for (const entry of touchingPairs) {
-        const parts = entry.split(':');
-        const cidA = parts[1], cidB = parts[2];
+      for (const [, [cidA, cidB]] of touchingPairs) {
         if (atWar(cidA, cidB)) continue;
         // War chance scales with combined population (base × up to 8×)
         const popScale = Math.min(8, Math.max(1, ((zonePopMap.get(cidA) || 0) + (zonePopMap.get(cidB) || 0)) / 10));
         if (!allied(cidA, cidB) && Math.random() < 0.003 * dt) {
-          alliances.set(allianceKey(cidA, cidB), { cidA, cidB, formedAt: now });
+          alliances.set(allianceKey(cidA, cidB), { cidA, cidB, formedAt: simTime });
+          logEvent('ally', `🤝 <b>${zoneNameFor(cidA)}</b> allied <b>${zoneNameFor(cidB)}</b>`);
           for (const h of humans) {
             if (!h.dying && (h.zoneId === cidA || h.zoneId === cidB)) {
               h.emotion = '🤝'; h.emotionAt = now;
@@ -875,7 +939,7 @@
         const pB = w.particles[w.cidB];
 
         // End stalled wars: one side grouped but the other never forms within 10s
-        if (!w.clashing && now - w.startTime >= 10000) {
+        if (!w.clashing && simTime - w.startTime >= 10) {
           const oneSideEmpty = pA.memberIds.size === 0 || pB.memberIds.size === 0;
           if (oneSideEmpty) { endWar(w.cidA, w.cidB); continue; }
         }
@@ -918,10 +982,10 @@
 
         // Both sides formed — wait for rally (≥3 soldiers or 4s elapsed) then charge
         const formed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
-        if (formed && !w.firstFormedAt) w.firstFormedAt = now;
+        if (formed && !w.firstFormedAt) w.firstFormedAt = simTime;
         const readyToCharge = formed && (
           (pA.memberIds.size >= 3 && pB.memberIds.size >= 3) ||
-          (w.firstFormedAt && now - w.firstFormedAt >= 4000)
+          (w.firstFormedAt && simTime - w.firstFormedAt >= 4)
         );
         const dx = pB.wx - pA.wx, dy = pB.wy - pA.wy;
         const dist = Math.hypot(dx, dy);
@@ -933,7 +997,8 @@
           // Sync grouped humans
           for (const h of humans) {
             if (!h.warGrouped || !h.zoneId) continue;
-            const myCid = h.zoneId === w.cidA ? w.cidA : h.zoneId === w.cidB ? w.cidB : null;
+            const myCid = (h.zoneId === w.cidA || allied(h.zoneId, w.cidA)) ? w.cidA
+                        : (h.zoneId === w.cidB || allied(h.zoneId, w.cidB)) ? w.cidB : null;
             if (myCid) { const p = w.particles[myCid]; h.wx = p.wx; h.wy = p.wy; }
           }
         }
@@ -966,7 +1031,7 @@
         // End war
         const aAlive = (zonePopMap.get(w.cidA) || 0) > 0;
         const bAlive = (zonePopMap.get(w.cidB) || 0) > 0;
-        const stillTouch = [...touchingPairs].some(e => e.startsWith(k));
+        const stillTouch = touchingPairs.has(k);
         if (!aAlive || !bAlive || !stillTouch) { endWar(w.cidA, w.cidB); }
       }
 
@@ -986,7 +1051,10 @@
           recomputeZones();
           // Clean up names, eras, and wars for removed clusters
           for (const cid of zoneNames.keys()) {
-            if (!buildings.some(b => b.clusterId === cid)) { zoneNames.delete(cid); zoneColors.delete(cid); }
+            if (!buildings.some(b => b.clusterId === cid)) {
+              logEvent('died', `💀 <b>${zoneNames.get(cid)}</b> dissolved`);
+              zoneNames.delete(cid); zoneColors.delete(cid);
+            }
           }
           for (const cid of clusterEras.keys()) {
             if (!buildings.some(b => b.clusterId === cid)) clusterEras.delete(cid);
@@ -1034,6 +1102,7 @@
 
           const newCid = Math.random().toString(36).slice(2);
           zoneNameFor(newCid);
+          logEvent('born', `💥 <b>${zoneNameFor(cid)}</b> split → <b>${zoneNameFor(newCid)}</b>`);
           for (const b of groupB) b.clusterId = newCid;
           splitOccurred = true;
         }
@@ -1055,7 +1124,7 @@
     let camX = 0, camY = 0, scale = 1;
     let isDragging = false, dragStartX = 0, dragStartY = 0;
 
-    // ── Drawing ──────────────────────────────────────────────
+    // ── Drawing helpers ───────────────────────────────────────
     function hexCorners(cx, cy, size) {
       const pts = [];
       for (let i = 0; i < 6; i++) {
@@ -1065,168 +1134,172 @@
       return pts;
     }
 
-    function drawHex(cx, cy, size, terrain) {
-      const corners = hexCorners(cx, cy, size);
-      ctx.beginPath();
-      ctx.moveTo(corners[0].x, corners[0].y);
-      for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
-      ctx.closePath();
-      ctx.fillStyle = terrain.fill;
-      ctx.fill();
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = BORDER / scale;
-      ctx.stroke();
-      if (scale > 0.5) {
-        const fs = Math.max(10, size * 0.55);
-        ctx.font = `${fs}px serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(terrain.label, cx, cy);
+    // '#rrggbb' / 'rgb(r,g,b)' → 0xRRGGBB
+    function hexStr2Int(s) {
+      if (s[0] === '#') return parseInt(s.slice(1), 16);
+      const m = s.match(/\d+/g);
+      return ((parseInt(m[0]) << 16) | (parseInt(m[1]) << 8) | parseInt(m[2])) >>> 0;
+    }
+    // HSL (degrees, 0-100, 0-100) → 0xRRGGBB
+    function hslToInt(h, s, l) {
+      s /= 100; l /= 100;
+      const k = n => (n + h / 30) % 12;
+      const a = s * Math.min(l, 1 - l);
+      const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+      return ((Math.round(f(0)*255) << 16) | (Math.round(f(8)*255) << 8) | Math.round(f(4)*255)) >>> 0;
+    }
+
+    // Emoji / text → PIXI.Texture (cached; font & fill-color selectable)
+    const _etCache = new Map();
+    function emojiTex(text, fontSize, font, color) {
+      font = font || 'serif';
+      const key = `${text}|${fontSize}|${font}|${color}`;
+      if (_etCache.has(key)) return _etCache.get(key);
+      const fs2 = fontSize * 2;
+      const ph  = Math.ceil(fontSize * 1.8) * 2; // canvas height
+      // Measure actual text width so long strings aren't clipped
+      const mctx = document.createElement('canvas').getContext('2d');
+      mctx.font = `${fs2}px ${font}`;
+      const pw = Math.max(ph, Math.ceil(mctx.measureText(text).width) + Math.ceil(fontSize * 0.8));
+      const c  = document.createElement('canvas');
+      c.width = pw; c.height = ph;
+      const c2 = c.getContext('2d');
+      c2.font = `${fs2}px ${font}`;
+      c2.textAlign = 'center'; c2.textBaseline = 'middle';
+      if (color) c2.fillStyle = color;
+      c2.fillText(text, pw / 2, ph / 2);
+      const tex = PIXI.Texture.from(c);
+      _etCache.set(key, tex); return tex;
+    }
+    function emojiSprite(text, size, font, color) {
+      const s = new PIXI.Sprite(emojiTex(text, size, font, color));
+      s.anchor.set(0.5); s.width = s.height = size * 1.5; return s;
+    }
+
+    // ── PixiJS scene graph ───────────────────────────────────
+    const worldCtr     = new PIXI.Container(); // camera-space root
+    app.stage.addChild(worldCtr);
+
+    const terrainGfx    = new PIXI.Graphics(); // hex fills (WebGL batched)
+    const terrainEmoCtr = new PIXI.Container(); // terrain emoji labels
+    const zoneFillGfx   = new PIXI.Graphics(); // zone fills (rebuilt only when dirty)
+    const zoneBorderGfx = new PIXI.Graphics(); // all zone borders (every frame)
+    const buildCtr      = new PIXI.Container(); // building sprites
+    const loveGfx       = new PIXI.Graphics(); // love lines + heart sprites
+    const sparkleCtr    = new PIXI.Container(); // birth / part sparkles
+    const humanCtr      = new PIXI.Container(); // human containers (pooled)
+    const warGfx        = new PIXI.Graphics(); // war lines + particles
+    worldCtr.addChild(terrainGfx, terrainEmoCtr, zoneFillGfx, zoneBorderGfx,
+                      buildCtr, loveGfx, sparkleCtr, humanCtr, warGfx);
+
+    // Screen-space UI layer
+    const uiGfx = new PIXI.Graphics();  // label background pills
+    const uiCtr = new PIXI.Container(); // label text nodes
+    app.stage.addChild(uiGfx, uiCtr);
+
+    // ── Terrain emoji sprite pool ────────────────────────────
+    const TPOOL_SZ = 1400;
+    const _tPool   = Array.from({ length: TPOOL_SZ }, () => {
+      const s = new PIXI.Sprite(PIXI.Texture.EMPTY);
+      s.anchor.set(0.5); s.visible = false;
+      terrainEmoCtr.addChild(s); return s;
+    });
+
+    // ── Human sprite pool ────────────────────────────────────
+    const _hPool = new Map(); // h.id → { ctr, shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr, _c }
+    function ensureHuman(h) {
+      if (_hPool.has(h.id)) return _hPool.get(h.id);
+      const ctr      = new PIXI.Container();
+      const shadow   = new PIXI.Graphics();
+      const emoSpr   = new PIXI.Sprite(PIXI.Texture.EMPTY); emoSpr.anchor.set(0.5);
+      const badgeGfx = new PIXI.Graphics();
+      const badgeSpr = new PIXI.Sprite(PIXI.Texture.EMPTY); badgeSpr.anchor.set(0.5);
+      const bubbGfx  = new PIXI.Graphics();
+      const bubbSpr  = new PIXI.Sprite(PIXI.Texture.EMPTY); bubbSpr.anchor.set(0.5);
+      ctr.addChild(shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr);
+      humanCtr.addChild(ctr);
+      const rec = { ctr, shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr,
+                    _c: { emoji: '', age: -1, emo: '' } };
+      _hPool.set(h.id, rec); return rec;
+    }
+
+    // ── Settlement label pool ────────────────────────────────
+    const _lblPool = [];
+    function getLbl(idx) {
+      if (idx < _lblPool.length) return _lblPool[idx];
+      const pill = new PIXI.Graphics();
+      const mkT  = (sz, col, wt) => {
+        const t = new PIXI.Text('', new PIXI.TextStyle({ fontSize: sz, fill: col, fontFamily: 'sans-serif', fontWeight: wt || 'normal' }));
+        t.anchor.set(0.5, 0); return t;
+      };
+      const t1 = mkT(11, 0xffdc64), t2 = mkT(14, 0xffffff, 'bold'), t3 = mkT(11, 0xaaddff);
+      uiCtr.addChild(pill, t1, t2, t3);
+      const node = { pill, t1, t2, t3 }; _lblPool.push(node); return node;
+    }
+    function hideLblsFrom(idx) {
+      for (let i = idx; i < _lblPool.length; i++) {
+        const { pill, t1, t2, t3 } = _lblPool[i];
+        pill.visible = t1.visible = t2.visible = t3.visible = false;
       }
     }
 
-    function drawHuman(h, now) {
-      if (h.warGrouped) return; // absorbed into war particle
-      const size = HEX_SIZE;
-      const cx = h.wx, cy = h.wy;
-      const baseAlpha = h.dyingAlpha ?? 1;
+    // ── Zone border edge caches (rebuilt with zoneRenderDirty) ─
+    let _tierEdges   = new Map();  // key → { color, alpha, coords[] }
+    let _zoneBorders = [];         // [{ x1,y1,x2,y2,cidA,cidB }]
+    let _zoneFillData = new Map(); // fillInt → { alpha, keys[] }
 
-      // Walking bob (elders bob less)
-      const moving = h.t < 1;
-      const bobAmp = h.age >= 60 ? 0.06 : 0.12;
-      const bob = moving ? Math.abs(Math.sin(now * 0.008)) * size * bobAmp : 0;
-
-      ctx.save();
-      ctx.globalAlpha = baseAlpha;
-
-      // Shadow
-      ctx.save();
-      ctx.globalAlpha = baseAlpha * 0.35;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy + size * 0.25, size * 0.22, size * 0.09, 0, 0, Math.PI * 2);
-      ctx.fillStyle = '#000';
-      ctx.fill();
-      ctx.restore();
-
-      // Human emoji (age + gender)
-      const humanEmoji = emojiForAge(h.age, h.gender);
-      const fs = Math.max(10, size * 0.58);
-      ctx.font = `${fs}px serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(humanEmoji, cx, cy - size * 0.08 - bob);
-
-      // Age badge
-      const genderSymbol = h.gender === 'female' ? '♀' : '♂';
-      const ageText = genderSymbol + Math.floor(h.age);
-      const badgeFs = Math.max(6, size * 0.22);
-      ctx.font = `bold ${badgeFs}px sans-serif`;
-      const badgeW = ctx.measureText(ageText).width + badgeFs * 0.6;
-      const badgeH = badgeFs * 1.4;
-      const bx = cx + size * 0.22;
-      const by = cy - size * 0.38 - bob;
-      // Badge color: gender tint fades to red with age
-      const ageRatio = h.age / MAX_AGE;
-      const isFemale = h.gender === 'female';
-      const br = Math.round(lerp(isFemale ? 200 : 60,  220, ageRatio));
-      const bg = Math.round(lerp(isFemale ? 100 : 140, 50,  ageRatio));
-      const bb = Math.round(lerp(isFemale ? 160 : 220, 50,  ageRatio));
-      ctx.beginPath();
-      ctx.roundRect(bx - badgeW/2, by - badgeH/2, badgeW, badgeH, badgeH/2);
-      ctx.fillStyle = `rgb(${br},${bg},${bb})`;
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(ageText, bx, by);
-
-      ctx.restore();
-
-      // Emotion bubble
-      if (emotionsOn) {
-        const alpha = (h.emotionAlpha ?? 1) * baseAlpha;
-        if (alpha > 0.01) {
-          const bubbleY = cy - size * 0.82 - bob;
-          const text = h.emotion;
-          const isEmoji = /\p{Emoji}/u.test(text) && text.length <= 2;
-          const efs = isEmoji ? Math.max(10, size * 0.48) : Math.max(8, size * 0.28);
-          ctx.font = `${efs}px ${isEmoji ? 'serif' : 'sans-serif'}`;
-
-          const tw = ctx.measureText(text).width;
-          const pad = size * 0.13;
-          const bw = tw + pad * 2;
-          const bh = efs + pad * 1.4;
-          const bx = cx - bw / 2;
-          const by = bubbleY - bh / 2;
-          const r  = bh / 2;
-
-          ctx.save();
-          ctx.globalAlpha = alpha;
-
-          // Bubble background
-          ctx.beginPath();
-          ctx.moveTo(bx + r, by);
-          ctx.lineTo(bx + bw - r, by);
-          ctx.quadraticCurveTo(bx + bw, by, bx + bw, by + r);
-          ctx.lineTo(bx + bw, by + bh - r);
-          ctx.quadraticCurveTo(bx + bw, by + bh, bx + bw - r, by + bh);
-          // Small tail pointing down
-          ctx.lineTo(cx + size * 0.08, by + bh);
-          ctx.lineTo(cx, by + bh + size * 0.16);
-          ctx.lineTo(cx - size * 0.08, by + bh);
-          ctx.lineTo(bx + r, by + bh);
-          ctx.quadraticCurveTo(bx, by + bh, bx, by + bh - r);
-          ctx.lineTo(bx, by + r);
-          ctx.quadraticCurveTo(bx, by, bx + r, by);
-          ctx.closePath();
-          ctx.fillStyle = 'rgba(255,255,255,0.92)';
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-          ctx.lineWidth = 0.8 / scale;
-          ctx.stroke();
-
-          // Text
-          ctx.fillStyle = '#222';
-          ctx.font = `${efs}px ${isEmoji ? 'serif' : 'sans-serif'}`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(text, cx, bubbleY);
-
-          ctx.restore();
-        }
-      }
-    }
+    function drawHex(_cx, _cy, _size, _terrain) {}
 
     function drawGrid(now) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.save();
-      ctx.translate(canvas.width/2 + camX, canvas.height/2 + camY);
-      ctx.scale(scale, scale);
+      // Apply camera transform to world container
+      worldCtr.x = canvas.width  / 2 + camX;
+      worldCtr.y = canvas.height / 2 + camY;
+      worldCtr.scale.set(scale);
 
       const viewW   = canvas.width  / scale;
       const viewH   = canvas.height / scale;
-      const originX = -canvas.width/2  / scale - camX / scale;
-      const originY = -canvas.height/2 / scale - camY / scale;
-
+      const originX = -canvas.width  / 2 / scale - camX / scale;
+      const originY = -canvas.height / 2 / scale - camY / scale;
       const colStart = Math.floor(originX / WW) - 1;
       const colEnd   = Math.ceil((originX + viewW) / WW) + 1;
       const rowStart = Math.floor(originY / RH) - 1;
       const rowEnd   = Math.ceil((originY + viewH) / RH) + 1;
 
-      for (let row = rowStart; row < rowEnd; row++) {
+      // ── Terrain hex tiles (batched fills by colour) ──────────
+      terrainGfx.clear();
+      const byColor = new Map();
+      for (let row = rowStart; row < rowEnd; row++)
         for (let col = colStart; col < colEnd; col++) {
           const { x: cx, y: cy } = hexCenter(row, col);
-          drawHex(cx, cy, HEX_SIZE, terrainFor(row, col));
+          const t = terrainFor(row, col);
+          if (!byColor.has(t.fill)) byColor.set(t.fill, []);
+          byColor.get(t.fill).push(cx, cy);
         }
+      for (const [fill, coords] of byColor) {
+        terrainGfx.lineStyle(BORDER / scale, 0xffffff, 1);
+        terrainGfx.beginFill(hexStr2Int(fill), 1);
+        for (let i = 0; i < coords.length; i += 2)
+          terrainGfx.drawPolygon(hexCorners(coords[i], coords[i+1], HEX_SIZE).flatMap(p => [p.x, p.y]));
+        terrainGfx.endFill();
       }
 
-      // Draw village zone hex fills + border
+      // Terrain emoji labels (sprite pool, recycled each frame)
+      let tpi = 0;
+      if (scale > 0.5) {
+        const fs = Math.max(10, HEX_SIZE * 0.55);
+        for (let row = rowStart; row < rowEnd && tpi < TPOOL_SZ; row++)
+          for (let col = colStart; col < colEnd && tpi < TPOOL_SZ; col++) {
+            const { x: cx, y: cy } = hexCenter(row, col);
+            const s = _tPool[tpi++];
+            s.texture = emojiTex(terrainFor(row, col).label, fs);
+            s.width = s.height = fs * 1.3; s.x = cx; s.y = cy; s.visible = true;
+          }
+      }
+      for (let i = tpi; i < TPOOL_SZ; i++) _tPool[i].visible = false;
+
+      // ── Zone fills + borders ─────────────────────────────────
       if (zonesOn && zoneHexes.size > 0) {
-        // Build hex→root and hex→color maps (cached, rebuilt only when zones change)
         if (zoneRenderDirty && buildings.length) {
-          const hexRoot  = new Map(); // key → cluster root index
-          const hexTierFill   = new Map();
-          const hexTierBorder = new Map();
           const parent2 = buildings.map((_, i) => i);
           function find2(i) { return parent2[i] === i ? i : (parent2[i] = find2(parent2[i])); }
           for (let i = 0; i < buildings.length; i++)
@@ -1234,353 +1307,384 @@
               if (buildings[i].clusterId && buildings[i].clusterId === buildings[j].clusterId &&
                   Math.hypot(buildings[i].wx - buildings[j].wx, buildings[i].wy - buildings[j].wy) < ZONE_MERGE)
                 parent2[find2(i)] = find2(j);
-          // map root index → clusterId
           const rootCluster = new Map();
           buildings.forEach((b, i) => { if (b.clusterId) rootCluster.set(find2(i), b.clusterId); });
-          const rootHexCount = new Map();
+
+          const hexFill = new Map(), hexBorder = new Map(), hexRoot = new Map();
           for (const key of zoneHexes) {
             const [rr, cc] = key.split(',').map(Number);
             const { x: kx, y: ky } = hexCenter(rr, cc);
             let bestRoot = -1, bestDist = Infinity;
-            buildings.forEach((b, i) => {
-              const d = Math.hypot(kx - b.wx, ky - b.wy);
-              if (d < bestDist) { bestDist = d; bestRoot = find2(i); }
-            });
+            buildings.forEach((b, i) => { const d = Math.hypot(kx-b.wx, ky-b.wy); if (d < bestDist) { bestDist=d; bestRoot=find2(i); } });
             hexRoot.set(key, bestRoot);
-            rootHexCount.set(bestRoot, (rootHexCount.get(bestRoot) || 0) + 1);
+            const cid = rootCluster.get(bestRoot) || String(bestRoot);
+            const hue = zoneColorFor(cid);
+            hexFill.set(key,   { fillInt: hslToInt(hue, 65, 55), alpha: 0.32 });
+            hexBorder.set(key, { borderInt: hslToInt(hue, 80, 70), alpha: 0.95, cid });
           }
+
+          // Fill data grouped by colour
+          _zoneFillData = new Map();
+          for (const [key, fd] of hexFill) {
+            if (!_zoneFillData.has(fd.fillInt)) _zoneFillData.set(fd.fillInt, { alpha: fd.alpha, keys: [] });
+            _zoneFillData.get(fd.fillInt).keys.push(key);
+          }
+          // Tier border edges + zone border pairs
+          _tierEdges = new Map(); _zoneBorders = [];
           for (const key of zoneHexes) {
-            const root = hexRoot.get(key);
-            const cid  = rootCluster.get(root) || String(root);
-            const hue  = zoneColorFor(cid);
-            hexTierFill.set(key,   `hsla(${hue},65%,55%,0.32)`);
-            hexTierBorder.set(key, `hsla(${hue},80%,70%,0.95)`);
-          }
-          zoneRenderCache = { hexTierFill, hexTierBorder, hexRoot };
-          villageClustersCache = computeVillageClusters();
-          zoneRenderDirty = false;
-        }
-        const { hexTierFill, hexTierBorder, hexRoot } = zoneRenderCache;
-
-        // Fill (group by color)
-        const fillGroups = new Map();
-        for (const [key, fill] of hexTierFill) {
-          if (!fillGroups.has(fill)) fillGroups.set(fill, []);
-          fillGroups.get(fill).push(key);
-        }
-        for (const [fill, keys] of fillGroups) {
-          ctx.fillStyle = fill;
-          for (const key of keys) {
             const comma = key.indexOf(',');
-            const row = +key.slice(0, comma), col = +key.slice(comma + 1);
+            const row = +key.slice(0, comma), col = +key.slice(comma+1);
             const { x: cx, y: cy } = hexCenter(row, col);
-            if (cx < originX - HEX_SIZE * 2 || cx > originX + viewW + HEX_SIZE * 2) continue;
-            if (cy < originY - HEX_SIZE * 2 || cy > originY + viewH + HEX_SIZE * 2) continue;
             const corners = hexCorners(cx, cy, HEX_SIZE);
-            ctx.beginPath();
-            ctx.moveTo(corners[0].x, corners[0].y);
-            for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
-            ctx.closePath();
-            ctx.fill();
-          }
-        }
-
-        // Collect border edges: outer tier edges + zone-to-zone boundaries
-        const tierBorderEdges = new Map();
-        const neutralEdges  = []; // [x1,y1,x2,y2]
-        const allianceEdges = [];
-        const warEdges      = [];
-
-        ctx.lineJoin = 'round';
-        ctx.lineCap  = 'round';
-        for (const key of zoneHexes) {
-          const comma = key.indexOf(',');
-          const row = +key.slice(0, comma), col = +key.slice(comma + 1);
-          const { x: cx, y: cy } = hexCenter(row, col);
-          if (cx < originX - HEX_SIZE * 3 || cx > originX + viewW + HEX_SIZE * 3) continue;
-          if (cy < originY - HEX_SIZE * 3 || cy > originY + viewH + HEX_SIZE * 3) continue;
-          const corners = hexCorners(cx, cy, HEX_SIZE);
-          const even = row % 2 === 0;
-          const myCid = hexClusterMap.get(key);
-          const bcolor = hexTierBorder.get(key);
-          const edgeNeighborKeys = [
-            `${row},${col+1}`,
-            `${row+1},${even ? col : col+1}`,
-            `${row+1},${even ? col-1 : col}`,
-            `${row},${col-1}`,
-            `${row-1},${even ? col-1 : col}`,
-            `${row-1},${even ? col : col+1}`,
-          ];
-          for (let i = 0; i < 6; i++) {
-            const nk = edgeNeighborKeys[i];
-            const x1 = corners[i].x, y1 = corners[i].y;
-            const x2 = corners[(i+1)%6].x, y2 = corners[(i+1)%6].y;
-            if (!zoneHexes.has(nk)) {
-              if (!tierBorderEdges.has(bcolor)) tierBorderEdges.set(bcolor, []);
-              tierBorderEdges.get(bcolor).push(x1, y1, x2, y2);
-            } else {
-              const nCid = hexClusterMap.get(nk);
-              if (nCid && nCid !== myCid) {
-                if (atWar(myCid, nCid))        warEdges.push(x1, y1, x2, y2);
-                else if (allied(myCid, nCid))  allianceEdges.push(x1, y1, x2, y2);
-                else                           neutralEdges.push(x1, y1, x2, y2);
+            const even = row % 2 === 0;
+            const { borderInt, alpha: ba, cid: myCid } = hexBorder.get(key);
+            const bk = `${borderInt}`;
+            const nbrs = [
+              `${row},${col+1}`, `${row+1},${even?col:col+1}`, `${row+1},${even?col-1:col}`,
+              `${row},${col-1}`, `${row-1},${even?col-1:col}`, `${row-1},${even?col:col+1}`,
+            ];
+            for (let i = 0; i < 6; i++) {
+              const nk = nbrs[i];
+              const x1 = corners[i].x, y1 = corners[i].y;
+              const x2 = corners[(i+1)%6].x, y2 = corners[(i+1)%6].y;
+              if (!zoneHexes.has(nk)) {
+                if (!_tierEdges.has(bk)) _tierEdges.set(bk, { color: borderInt, alpha: ba, coords: [] });
+                _tierEdges.get(bk).coords.push(x1, y1, x2, y2);
+              } else {
+                const nCid = hexClusterMap.get(nk);
+                if (nCid && nCid !== myCid && myCid < nCid)
+                  _zoneBorders.push({ x1, y1, x2, y2, cidA: myCid, cidB: nCid });
               }
             }
           }
-        }
 
-        // 1. Outer tier borders
-        ctx.lineWidth = 4.5 / scale;
-        for (const [bcolor, coords] of tierBorderEdges) {
-          ctx.strokeStyle = bcolor;
-          ctx.beginPath();
-          for (let i = 0; i < coords.length; i += 4) {
-            ctx.moveTo(coords[i], coords[i+1]);
-            ctx.lineTo(coords[i+2], coords[i+3]);
-          }
-          ctx.stroke();
-        }
-
-        // 2. Neutral zone-to-zone borders
-        if (neutralEdges.length) {
-          ctx.lineWidth = 4.5 / scale;
-          ctx.strokeStyle = 'rgba(0,0,0,0.80)';
-          ctx.beginPath();
-          for (let i = 0; i < neutralEdges.length; i += 4) {
-            ctx.moveTo(neutralEdges[i], neutralEdges[i+1]);
-            ctx.lineTo(neutralEdges[i+2], neutralEdges[i+3]);
-          }
-          ctx.stroke();
-        }
-
-        // 3. Alliance borders — bright green, drawn last so they sit on top
-        if (allianceEdges.length) {
-          ctx.lineWidth = 5 / scale;
-          ctx.strokeStyle = 'rgba(50,230,90,1)';
-          ctx.beginPath();
-          for (let i = 0; i < allianceEdges.length; i += 4) {
-            ctx.moveTo(allianceEdges[i], allianceEdges[i+1]);
-            ctx.lineTo(allianceEdges[i+2], allianceEdges[i+3]);
-          }
-          ctx.stroke();
-        }
-
-        // 4. War borders — bright red, drawn last
-        if (warEdges.length) {
-          ctx.lineWidth = 5 / scale;
-          ctx.strokeStyle = 'rgba(230,30,30,1)';
-          ctx.beginPath();
-          for (let i = 0; i < warEdges.length; i += 4) {
-            ctx.moveTo(warEdges[i], warEdges[i+1]);
-            ctx.lineTo(warEdges[i+2], warEdges[i+3]);
-          }
-          ctx.stroke();
-        }
-
-        // Icons at midpoint of alliance / war borders (deduplicated)
-        if (allianceEdges.length || warEdges.length) {
-          ctx.font = `${Math.max(8, HEX_SIZE * 0.3)}px serif`;
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-          const drawnIcons = new Set();
-          const drawIcons = (edges, icon) => {
-            for (let i = 0; i < edges.length; i += 4) {
-              const mx = (edges[i] + edges[i+2]) / 2;
-              const my = (edges[i+1] + edges[i+3]) / 2;
-              const mk = `${Math.round(mx / HEX_SIZE)},${Math.round(my / HEX_SIZE)}`;
-              if (!drawnIcons.has(mk)) { drawnIcons.add(mk); ctx.fillText(icon, mx, my); }
+          // Rebuild zone fill Graphics (static — not scale-dependent)
+          zoneFillGfx.clear();
+          for (const [fillInt, { alpha, keys }] of _zoneFillData) {
+            zoneFillGfx.beginFill(fillInt, alpha);
+            for (const key of keys) {
+              const comma = key.indexOf(',');
+              const row = +key.slice(0, comma), col = +key.slice(comma+1);
+              const { x: cx, y: cy } = hexCenter(row, col);
+              zoneFillGfx.drawPolygon(hexCorners(cx, cy, HEX_SIZE).flatMap(p => [p.x, p.y]));
             }
-          };
-          drawIcons(allianceEdges, '🤝');
-          drawIcons(warEdges, '⚔️');
+            zoneFillGfx.endFill();
+          }
+
+          zoneRenderCache = { hexTierFill: hexFill, hexTierBorder: hexBorder, hexRoot };
+          villageClustersCache = computeVillageClusters();
+          zoneRenderDirty = false;
         }
 
+        // Borders (tier + dynamic war/alliance/neutral) — every frame from cache
+        zoneBorderGfx.removeChildren(); zoneBorderGfx.clear();
+        for (const { color, alpha, coords } of _tierEdges.values()) {
+          zoneBorderGfx.lineStyle(4.5 / scale, color, alpha);
+          for (let i = 0; i < coords.length; i += 4) {
+            zoneBorderGfx.moveTo(coords[i], coords[i+1]);
+            zoneBorderGfx.lineTo(coords[i+2], coords[i+3]);
+          }
+        }
+        const allyE = [], warE = [], neutE = [];
+        // Track centroid of shared edges per zone-pair for icon placement
+        const allyPairs = new Map(), warPairs = new Map();
+        for (const { x1, y1, x2, y2, cidA, cidB } of _zoneBorders) {
+          const mx = (x1+x2)/2, my = (y1+y2)/2;
+          if (atWar(cidA, cidB)) {
+            warE.push(x1, y1, x2, y2);
+            const pk = warKey(cidA, cidB);
+            const e = warPairs.get(pk) || { sx:0, sy:0, n:0 };
+            e.sx += mx; e.sy += my; e.n++; warPairs.set(pk, e);
+          } else if (allied(cidA, cidB)) {
+            allyE.push(x1, y1, x2, y2);
+            const pk = allianceKey(cidA, cidB);
+            const e = allyPairs.get(pk) || { sx:0, sy:0, n:0 };
+            e.sx += mx; e.sy += my; e.n++; allyPairs.set(pk, e);
+          } else {
+            neutE.push(x1, y1, x2, y2);
+          }
+        }
+        const drawEdges = (e, lw, col, al) => {
+          if (!e.length) return;
+          zoneBorderGfx.lineStyle(lw / scale, col, al);
+          for (let i = 0; i < e.length; i += 4) { zoneBorderGfx.moveTo(e[i], e[i+1]); zoneBorderGfx.lineTo(e[i+2], e[i+3]); }
+        };
+        drawEdges(neutE, 3, 0xffffff, 0.55);
+        drawEdges(allyE, 5, 0x32e65a, 1.00);
+        drawEdges(warE,  5, 0xe61e1e, 1.00);
+        // One icon per zone-pair, at the centroid of their shared border
+        if (allyPairs.size || warPairs.size) {
+          const icoFs = Math.max(8, HEX_SIZE * 0.3);
+          for (const { sx, sy, n } of allyPairs.values()) {
+            const s = emojiSprite('🤝', icoFs); s.x = sx/n; s.y = sy/n; zoneBorderGfx.addChild(s);
+          }
+          for (const { sx, sy, n } of warPairs.values()) {
+            const s = emojiSprite('⚔️', icoFs); s.x = sx/n; s.y = sy/n; zoneBorderGfx.addChild(s);
+          }
+        }
+      } else {
+        zoneFillGfx.clear();
+        zoneBorderGfx.removeChildren(); zoneBorderGfx.clear();
       }
 
-      // Draw buildings
-      for (const b of buildings) {
-        const bfs = Math.max(10, HEX_SIZE * 0.62);
-        ctx.font = `${bfs}px serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(b.emoji, b.wx, b.wy - HEX_SIZE * 0.05);
+      // ── Buildings ────────────────────────────────────────────
+      if (buildCtr.children.length !== buildings.length) {
+        buildCtr.removeChildren();
+        for (const b of buildings) {
+          const s = emojiSprite(b.emoji, Math.max(10, HEX_SIZE * 0.62));
+          s.x = b.wx; s.y = b.wy - HEX_SIZE * 0.05; buildCtr.addChild(s);
+        }
       }
 
-      // Draw love connections
-      const drawn = new Set();
-      for (const h of humans) { if (!loveLinesOn) break;
-        if (!h.loveId || drawn.has(h.id)) continue;
-        const partner = humanById.get(h.loveId);
-        if (!partner) continue;
-        drawn.add(h.id);
-        drawn.add(partner.id);
-
-        const alpha = Math.min(h.dyingAlpha ?? 1, partner.dyingAlpha ?? 1);
-        const pulse = 0.55 + 0.45 * Math.sin(now * 0.004); // gentle pulse
-
-        ctx.save();
-        ctx.globalAlpha = alpha * pulse;
-
-        // Dashed pink stroke
-        ctx.beginPath();
-        ctx.moveTo(h.wx, h.wy);
-        ctx.lineTo(partner.wx, partner.wy);
-        ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
-        ctx.strokeStyle = '#ff6eb0';
-        ctx.lineWidth = 2.5 / scale;
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Heart emoji at midpoint
-        const mx = (h.wx + partner.wx) / 2;
-        const my = (h.wy + partner.wy) / 2;
-        const hfs = Math.max(8, HEX_SIZE * 0.42);
-        ctx.font = `${hfs}px serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.globalAlpha = alpha;
-        ctx.fillText('❤️', mx, my);
-
-        ctx.restore();
+      // ── Love lines ───────────────────────────────────────────
+      loveGfx.removeChildren(); loveGfx.clear();
+      if (loveLinesOn) {
+        const pulse = 0.55 + 0.45 * Math.sin(now * 0.004);
+        const drawn = new Set();
+        for (const h of humans) {
+          if (!h.loveId || drawn.has(h.id)) continue;
+          const partner = humanById.get(h.loveId);
+          if (!partner) continue;
+          drawn.add(h.id); drawn.add(partner.id);
+          const alpha = Math.min(h.dyingAlpha ?? 1, partner.dyingAlpha ?? 1);
+          loveGfx.lineStyle(2.5 / scale, 0xff6eb0, alpha * pulse);
+          loveGfx.moveTo(h.wx, h.wy); loveGfx.lineTo(partner.wx, partner.wy);
+          const mx = (h.wx+partner.wx)/2, my = (h.wy+partner.wy)/2;
+          const hs = emojiSprite('❤️', Math.max(8, HEX_SIZE * 0.42));
+          hs.x=mx; hs.y=my; hs.alpha=alpha; loveGfx.addChild(hs);
+        }
       }
 
-      // Part sparkles (💔)
+      // ── Sparkles ─────────────────────────────────────────────
+      sparkleCtr.removeChildren();
       for (const h of humans) {
-        if (!h.partAnim) continue;
-        const { wx, wy, alpha } = h.partAnim;
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        const pfs = Math.max(8, HEX_SIZE * 0.45);
-        ctx.font = `${pfs}px serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('💔', wx, wy - HEX_SIZE * 0.5 * (1 - alpha));
-        ctx.restore();
+        if (h.partAnim) {
+          const { wx, wy, alpha } = h.partAnim;
+          const s = emojiSprite('💔', Math.max(8, HEX_SIZE * 0.45));
+          s.x=wx; s.y=wy - HEX_SIZE*0.5*(1-alpha); s.alpha=alpha; sparkleCtr.addChild(s);
+        }
+        if (h.birthAnim) {
+          const { wx, wy, alpha, count } = h.birthAnim;
+          const cnt = count ?? 1;
+          const bfs = Math.max(10, HEX_SIZE * 0.52);
+          const yOff = wy - HEX_SIZE * 0.7 * (1 - alpha);
+          for (let bi = 0; bi < cnt; bi++) {
+            const s = emojiSprite('👶', bfs);
+            s.x = wx + (bi - (cnt - 1) / 2) * bfs * 1.1;
+            s.y = yOff; s.alpha = alpha; sparkleCtr.addChild(s);
+          }
+        }
       }
 
-      // Birth sparkles
+      // ── Humans ───────────────────────────────────────────────
+      for (const [id, rec] of _hPool) {
+        if (!humanById.has(id)) { rec.ctr.parent && rec.ctr.parent.removeChild(rec.ctr); _hPool.delete(id); }
+      }
       for (const h of humans) {
-        if (!h.birthAnim) continue;
-        const { wx, wy, alpha, count } = h.birthAnim;
-        const rise = HEX_SIZE * 0.7 * (1 - alpha);
-        ctx.save();
-        ctx.globalAlpha = alpha;
-        const bfs = Math.max(10, HEX_SIZE * 0.52);
-        ctx.font = `${bfs}px serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const babies = '👶'.repeat(count ?? 1);
-        ctx.fillText(babies, wx, wy - rise);
-        ctx.restore();
+        if (h.warGrouped) { if (_hPool.has(h.id)) _hPool.get(h.id).ctr.visible = false; continue; }
+        const rec = ensureHuman(h);
+        rec.ctr.visible = true;
+        rec.ctr.x = h.wx; rec.ctr.y = h.wy;
+        rec.ctr.alpha = h.dyingAlpha ?? 1;
+
+        const moving = h.t < 1;
+        const bob = moving ? Math.abs(Math.sin(now * 0.008)) * HEX_SIZE * (h.age >= 60 ? 0.06 : 0.12) : 0;
+
+        rec.shadow.clear();
+        rec.shadow.beginFill(0x000000, 0.35);
+        rec.shadow.drawEllipse(0, HEX_SIZE*0.25, HEX_SIZE*0.22, HEX_SIZE*0.09);
+        rec.shadow.endFill();
+
+        const humanEmoji = emojiForAge(h.age, h.gender);
+        const fs = Math.max(10, HEX_SIZE * 0.58);
+        if (rec._c.emoji !== humanEmoji) {
+          rec.emoSpr.texture = emojiTex(humanEmoji, fs);
+          rec.emoSpr.width = rec.emoSpr.height = fs * 1.4;
+          rec._c.emoji = humanEmoji;
+        }
+        rec.emoSpr.y = -HEX_SIZE * 0.08 - bob;
+
+        const ageInt  = Math.floor(h.age);
+        const badgeFs = Math.max(6, HEX_SIZE * 0.22);
+        const gSym    = h.gender === 'female' ? '♀' : '♂';
+        const ageText = gSym + ageInt;
+        const badgeW  = badgeFs * (ageText.length * 0.72 + 0.6);
+        const badgeH  = badgeFs * 1.4;
+        const bxOff   = HEX_SIZE * 0.22;
+        const byOff   = -HEX_SIZE * 0.38 - bob;
+        const ageRatio = h.age / MAX_AGE, isFem = h.gender === 'female';
+        const br = Math.round(lerp(isFem?200:60, 220, ageRatio));
+        const bg = Math.round(lerp(isFem?100:140, 50, ageRatio));
+        const bb = Math.round(lerp(isFem?160:220, 50, ageRatio));
+        rec.badgeGfx.clear();
+        rec.badgeGfx.beginFill(((br<<16)|(bg<<8)|bb)>>>0, 1);
+        rec.badgeGfx.drawRoundedRect(bxOff-badgeW/2, byOff-badgeH/2, badgeW, badgeH, badgeH/2);
+        rec.badgeGfx.endFill();
+        if (rec._c.age !== ageInt) {
+          rec.badgeSpr.texture = emojiTex(ageText, badgeFs, 'bold sans-serif', '#ffffff');
+          rec.badgeSpr.width = rec.badgeSpr.height = badgeFs * 1.2;
+          rec._c.age = ageInt;
+        }
+        rec.badgeSpr.x = bxOff; rec.badgeSpr.y = byOff;
+
+        const eAge = now - h.emotionAt;
+        const fadeMs = 600;
+        let eAlpha = 1;
+        if (eAge < fadeMs)                         eAlpha = eAge / fadeMs;
+        else if (eAge > EMOTION_INTERVAL - fadeMs) eAlpha = (EMOTION_INTERVAL - eAge) / fadeMs;
+        eAlpha = Math.max(0, Math.min(1, eAlpha));
+        const showBubble = emotionsOn && eAlpha > 0.01;
+        rec.bubbGfx.visible = rec.bubbSpr.visible = showBubble;
+        if (showBubble) {
+          const bubY  = -HEX_SIZE * 0.82 - bob;
+          const isEmo = /\p{Emoji}/u.test(h.emotion) && h.emotion.length <= 2;
+          const efs   = isEmo ? Math.max(10, HEX_SIZE*0.48) : Math.max(8, HEX_SIZE*0.28);
+          const pad   = HEX_SIZE * 0.13;
+          // Update texture first so we can size the bubble from the real sprite width
+          if (rec._c.emo !== h.emotion) {
+            const tex = emojiTex(h.emotion, efs, isEmo?'serif':'sans-serif', isEmo?null:'#222222');
+            rec.bubbSpr.texture = tex;
+            rec.bubbSpr.height = efs * 1.4;
+            rec.bubbSpr.width  = rec.bubbSpr.height * (tex.width / tex.height);
+            rec._c.emo = h.emotion;
+          }
+          const bw2 = rec.bubbSpr.width + pad * 2;
+          const bh2 = efs + pad * 1.4;
+          rec.bubbGfx.clear();
+          rec.bubbGfx.alpha = eAlpha;
+          rec.bubbGfx.beginFill(0xffffff, 0.92);
+          rec.bubbGfx.lineStyle(0.8/scale, 0x000000, 0.15);
+          rec.bubbGfx.drawRoundedRect(-bw2/2, bubY-bh2/2, bw2, bh2, bh2/2);
+          rec.bubbGfx.moveTo(HEX_SIZE*0.08, bubY+bh2/2);
+          rec.bubbGfx.lineTo(0, bubY+bh2/2+HEX_SIZE*0.16);
+          rec.bubbGfx.lineTo(-HEX_SIZE*0.08, bubY+bh2/2);
+          rec.bubbGfx.endFill();
+          rec.bubbSpr.x = 0; rec.bubbSpr.y = bubY; rec.bubbSpr.alpha = eAlpha;
+        }
       }
 
-      // Draw humans on top
-      for (const h of humans) drawHuman(h, now);
-
-      // Draw war particles above everything in world space (but below screen-space labels)
+      // ── War particles ────────────────────────────────────────
+      warGfx.removeChildren(); warGfx.clear();
       if (wars.size > 0) {
         const pulse = 0.55 + 0.45 * Math.sin(now * 0.005);
         for (const w of wars.values()) {
-          const pA = w.particles[w.cidA];
-          const pB = w.particles[w.cidB];
-
+          const pA = w.particles[w.cidA], pB = w.particles[w.cidB];
           const bothFormed = pA.memberIds.size > 0 && pB.memberIds.size > 0;
-
-          // War line — dashed red like love line, ⚔️ at midpoint
           if (bothFormed) {
-            const mx = (pA.wx + pB.wx) / 2, my = (pA.wy + pB.wy) / 2;
-            ctx.save();
-            ctx.globalAlpha = pulse;
-            ctx.strokeStyle = '#ff2020';
-            ctx.lineWidth = 2.5 / scale;
-            ctx.setLineDash([HEX_SIZE * 0.18, HEX_SIZE * 0.12]);
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(pA.wx, pA.wy);
-            ctx.lineTo(pB.wx, pB.wy);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.globalAlpha = 1;
-            ctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
-            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-            ctx.fillText('⚔️', mx, my);
-            // Clash flash burst
+            const mx = (pA.wx+pB.wx)/2, my = (pA.wy+pB.wy)/2;
+            warGfx.lineStyle(2.5/scale, 0xff2020, pulse);
+            warGfx.moveTo(pA.wx, pA.wy); warGfx.lineTo(pB.wx, pB.wy);
+            const sw = emojiSprite('⚔️', Math.max(10, HEX_SIZE*0.55)); sw.x=mx; sw.y=my; warGfx.addChild(sw);
             if (w.clashing) {
-              ctx.globalAlpha = 0.55 + 0.45 * Math.sin(now * 0.04);
-              ctx.beginPath();
-              ctx.arc(mx, my, HEX_SIZE * 1.4, 0, Math.PI * 2);
-              ctx.fillStyle = '#ffcc00';
-              ctx.fill();
-              ctx.globalAlpha = 1;
-              ctx.font = `${Math.max(14, HEX_SIZE * 1.1)}px serif`;
-              ctx.fillText('💥', mx, my);
+              warGfx.beginFill(0xffcc00, 0.55+0.45*Math.sin(now*0.04));
+              warGfx.drawCircle(mx, my, HEX_SIZE*1.4); warGfx.endFill();
+              const bs = emojiSprite('💥', Math.max(14, HEX_SIZE*1.1)); bs.x=mx; bs.y=my; warGfx.addChild(bs);
             }
-            ctx.restore();
           }
-
-          // Draw each particle — emoji + count
-          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           for (const p of [pA, pB]) {
-            const cnt = p.memberIds.size;
-            if (cnt === 0) continue;
-            ctx.font = `${Math.max(12, HEX_SIZE * 0.9)}px serif`;
-            ctx.fillText('⚔️', p.wx, p.wy);
-            ctx.font = `bold ${Math.max(8, HEX_SIZE * 0.35)}px sans-serif`;
-            ctx.fillStyle = '#fff';
-            ctx.fillText(`×${cnt}`, p.wx, p.wy + HEX_SIZE * 1.0);
+            if (!p.memberIds.size) continue;
+            const ps = emojiSprite('⚔️', Math.max(12, HEX_SIZE*0.9)); ps.x=p.wx; ps.y=p.wy; warGfx.addChild(ps);
+            const cs = emojiSprite(`×${p.memberIds.size}`, Math.max(8, HEX_SIZE*0.35), 'bold sans-serif', '#ffffff');
+            cs.x=p.wx; cs.y=p.wy+HEX_SIZE; warGfx.addChild(cs);
           }
         }
       }
 
-      ctx.restore();
-
-      // ── Settlement labels (screen space — fixed size, always visible) ──
+      // ── Settlement labels (screen-space) ─────────────────────
+      labelHitAreas = [];
+      let lblIdx = 0;
+      uiGfx.clear();
       if (zonesOn) {
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
         for (const v of villageClustersCache) {
-          const sx = v.wx * scale + canvas.width  / 2 + camX;
-          const sy = v.wy * scale + canvas.height / 2 + camY;
-          if (sx < -140 || sx > canvas.width + 140 || sy < -80 || sy > canvas.height + 80) continue;
+          const sx = v.wx*scale + canvas.width/2  + camX;
+          const sy = v.wy*scale + canvas.height/2 + camY;
+          if (sx < -140 || sx > canvas.width+140 || sy < -80 || sy > canvas.height+80) continue;
 
           const tier = settlementTier(v.hexCount);
           const name = zoneNameFor(v.clusterId);
           const era  = ERAS[clusterEras.get(v.clusterId) ?? 0];
           const residents = zonePopMap.get(v.clusterId) || 0;
+          const lineH = 17, pillW = 130, pillH = lineH*3+10, pillR = 7;
+          const px = sx - pillW/2, py = sy - 72;
 
-          // Background pill
-          const lineH = 17;
-          const pillW = 130, pillH = lineH * 3 + 10, pillR = 7;
-          const px = sx - pillW / 2, py = sy - 72;
-          ctx.beginPath();
-          ctx.roundRect(px, py, pillW, pillH, pillR);
-          ctx.fillStyle = 'rgba(0,0,0,0.62)';
-          ctx.fill();
+          uiGfx.beginFill(0x000000, 0.62);
+          uiGfx.drawRoundedRect(px, py, pillW, pillH, pillR);
+          uiGfx.endFill();
 
-          // Era
-          ctx.font = '11px sans-serif';
-          ctx.fillStyle = 'rgba(255,220,100,1)';
-          ctx.fillText(`${era.emoji} ${era.name}`, sx, py + 10 + lineH * 0);
-          // Zone name
-          ctx.font = 'bold 14px sans-serif';
-          ctx.fillStyle = '#ffffff';
-          ctx.fillText(name, sx, py + 10 + lineH * 1);
-          // Tier + population
-          ctx.font = '11px sans-serif';
-          ctx.fillStyle = tier.color;
-          ctx.fillText(`${tier.label}  👤${residents}`, sx, py + 10 + lineH * 2);
+          const { t1, t2, t3 } = getLbl(lblIdx++);
+          t1.visible = t2.visible = t3.visible = true;
+          const { pill } = _lblPool[lblIdx-1]; pill.visible = false; // pill drawn in uiGfx instead
+          t1.text = `${era.emoji} ${era.name}`; t1.x=sx; t1.y=py+10;
+          t2.text = name;                        t2.x=sx; t2.y=py+10+lineH;
+          t3.text = `${tier.label}  👤${residents}`; t3.x=sx; t3.y=py+10+lineH*2;
+
+          labelHitAreas.push({ clusterId: v.clusterId, x: px, y: py, w: pillW, h: pillH });
         }
       }
+      hideLblsFrom(lblIdx);
+
+      // Commit to WebGL
+      app.renderer.render(app.stage);
     }
+
+    // ── Pause / speed controls ────────────────────────────────
+    const pauseBtn = document.getElementById('pause-btn');
+    pauseBtn.addEventListener('click', () => {
+      paused = !paused;
+      pauseBtn.textContent = paused ? '▶' : '⏸';
+      pauseBtn.classList.toggle('paused', paused);
+      if (paused) lastTime = null;
+    });
+    document.querySelectorAll('.speed-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        simSpeed = parseFloat(btn.dataset.speed);
+        document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if (paused) { paused = false; pauseBtn.textContent = '⏸'; pauseBtn.classList.remove('paused'); }
+      });
+    });
+
+    // ── Zone rename ───────────────────────────────────────────
+    const renameInput = document.getElementById('rename-input');
+    function showRenameInput(clusterId, x, y, w) {
+      renameInput.value = zoneNames.get(clusterId) || '';
+      renameInput.style.left  = x + 'px';
+      renameInput.style.top   = (y + 24) + 'px';
+      renameInput.style.width = w + 'px';
+      renameInput.style.display = 'block';
+      renameInput.dataset.clusterId = clusterId;
+      renameInput.focus();
+      renameInput.select();
+    }
+    function commitRename() {
+      const cid = renameInput.dataset.clusterId;
+      const val = renameInput.value.trim();
+      if (cid && val) {
+        const old = zoneNames.get(cid);
+        zoneNames.set(cid, val);
+        if (old && old !== val) logEvent('rename', `✏️ <b>${old}</b> → <b>${val}</b>`);
+      }
+      renameInput.style.display = 'none';
+      renameInput.dataset.clusterId = '';
+    }
+    renameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { commitRename(); e.preventDefault(); }
+      if (e.key === 'Escape') { renameInput.style.display = 'none'; }
+      e.stopPropagation();
+    });
+    renameInput.addEventListener('blur', commitRename);
+    renameInput.addEventListener('mousedown', (e) => e.stopPropagation());
 
     // ── Animation loop ────────────────────────────────────────
     function loop(now) {
-      if (lastTime !== null) {
-        const dt = (now - lastTime) / 1000;
+      if (!paused && lastTime !== null) {
+        const dt = Math.min((now - lastTime) / 1000, 0.1) * simSpeed;
         simYear += dt * YEARS_PER_SECOND;
+        simTime += dt;
         updateHumans(dt, now);
         yearEl.textContent = `Year ${Math.floor(simYear)}`;
       }
-      lastTime = now;
+      if (!paused) lastTime = now;
       drawGrid(now);
       requestAnimationFrame(loop);
     }
@@ -1603,37 +1707,61 @@
       let menuCamY = 0;
       let menuRaf;
       let lastMenuNow = null;
+      let menuElapsed = 0; // seconds since menu opened
+
+      // Wave travels outward from world-origin over REVEAL_DUR seconds
+      const REVEAL_DUR  = 3.5;
 
       function resizeMenuCanvas() {
         mc.width  = window.innerWidth;
         mc.height = window.innerHeight;
       }
 
-      function drawMenuHex(cx, cy, terrain) {
+      // revealAlpha 0 = black hex, 1 = full terrain colour
+      function drawMenuHex(cx, cy, terrain, revealAlpha) {
         const corners = hexCorners(cx, cy, HEX_SIZE);
         mctx.beginPath();
         mctx.moveTo(corners[0].x, corners[0].y);
         for (let i = 1; i < 6; i++) mctx.lineTo(corners[i].x, corners[i].y);
         mctx.closePath();
-        mctx.fillStyle = terrain.fill;
-        mctx.fill();
-        mctx.strokeStyle = 'rgba(255,255,255,0.18)';
+
+        // Terrain fill fades in
+        if (revealAlpha > 0) {
+          mctx.globalAlpha = revealAlpha;
+          mctx.fillStyle = terrain.fill;
+          mctx.fill();
+          mctx.globalAlpha = 1;
+        }
+
+        // Grid lines always visible — they form the "black hexagon" silhouette at start
+        mctx.strokeStyle = `rgba(255,255,255,${0.14 + revealAlpha * 0.08})`;
         mctx.lineWidth = 1.2;
         mctx.stroke();
-        mctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
-        mctx.textAlign = 'center';
-        mctx.textBaseline = 'middle';
-        mctx.fillText(terrain.label, cx, cy);
+
+        // Emoji label fades in after fill is mostly visible
+        if (revealAlpha > 0.4) {
+          mctx.globalAlpha = Math.min(1, (revealAlpha - 0.4) / 0.6);
+          mctx.font = `${Math.max(10, HEX_SIZE * 0.55)}px serif`;
+          mctx.textAlign = 'center';
+          mctx.textBaseline = 'middle';
+          mctx.fillText(terrain.label, cx, cy);
+          mctx.globalAlpha = 1;
+        }
       }
 
       function drawMenuFrame(now) {
         if (lastMenuNow === null) lastMenuNow = now;
         const dt = Math.min((now - lastMenuNow) / 1000, 0.1);
         lastMenuNow = now;
+        menuElapsed += dt;
 
         menuCamX -= PAN_SPEED * dt;
 
+        // Black canvas — hexagon grid lines drawn on top give the "dark hex" look at start
         mctx.clearRect(0, 0, mc.width, mc.height);
+        mctx.fillStyle = '#000';
+        mctx.fillRect(0, 0, mc.width, mc.height);
+
         mctx.save();
         mctx.translate(mc.width / 2 + menuCamX, mc.height / 2 + menuCamY);
         mctx.scale(MENU_SCALE, MENU_SCALE);
@@ -1648,10 +1776,18 @@
         const rowStart = Math.floor(originY / RH) - 1;
         const rowEnd   = Math.ceil((originY + viewH) / RH) + 1;
 
+        // Wave front: distance from world origin that has been revealed so far
+        const maxDist  = Math.hypot(viewW, viewH) * 0.9;
+        const waveEdge = maxDist * 0.28; // soft leading edge width
+        const waveFront = (menuElapsed / REVEAL_DUR) * (maxDist + waveEdge);
+
         for (let row = rowStart; row < rowEnd; row++) {
           for (let col = colStart; col < colEnd; col++) {
             const { x: cx, y: cy } = hexCenter(row, col);
-            drawMenuHex(cx, cy, terrainFor(row, col));
+            const dist = Math.hypot(cx, cy); // distance from world origin
+            const t = Math.max(0, Math.min(1, (waveFront - dist) / waveEdge));
+            const revealAlpha = t * t * (3 - 2 * t); // smoothstep
+            drawMenuHex(cx, cy, terrainFor(row, col), revealAlpha);
           }
         }
 
@@ -1676,9 +1812,14 @@
       startBtn.addEventListener('click', () => {
         menu.classList.add('hidden');
         cancelAnimationFrame(menuRaf);
+        window.removeEventListener('resize', resizeMenuCanvas);
         const panels = document.getElementById('right-panels');
         panels.style.opacity = '1';
         panels.style.pointerEvents = 'auto';
+        statsPanel.classList.add('visible');
+        // If the user didn't type a seed, use the menu's random seed so the
+        // world they see isn't always identical
+        if (!seedInput.value.trim()) seedInput.value = MENU_SEED;
         generate();
       });
     })();
@@ -1686,6 +1827,8 @@
     // ── Seed panel ────────────────────────────────────────────
     function generate() {
       simYear = 0;
+      simTime = 0;
+      statsLog.innerHTML = '';
       applySeed(seedInput.value.trim());
       terrainOverrides.clear();
       camX = 0; camY = 0; scale = 1;
@@ -1695,6 +1838,9 @@
       villageClustersCache = [];
       clusterEras.clear();
       alliances.clear();
+      wars.clear();
+      zoneNames.clear();
+      zoneColors.clear();
       zoneHexes = new Set();
       hexClusterMap = new Map();
       touchingPairsDirty = true;
@@ -1779,10 +1925,20 @@
 
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { cancelPlacing(); if (terraformMode) { terraformMode = false; terraformBtn.textContent = '🖊 Paint Terrain'; terraformBtn.style.background = ''; terraformBtn.style.borderColor = ''; terrainSelector.style.display = 'none'; } } });
     document.getElementById('right-panels').addEventListener('mousedown', (e) => e.stopPropagation());
+    statsPanel.addEventListener('mousedown', (e) => e.stopPropagation());
 
     canvas.addEventListener('click', (e) => {
       if (terraformMode) { paintTerrain(e.clientX, e.clientY); return; }
-      if (!placingHuman) return;
+      if (!placingHuman) {
+        for (const hit of labelHitAreas) {
+          if (e.clientX >= hit.x && e.clientX <= hit.x + hit.w &&
+              e.clientY >= hit.y && e.clientY <= hit.y + hit.h) {
+            showRenameInput(hit.clusterId, hit.x, hit.y, hit.w);
+            return;
+          }
+        }
+        return;
+      }
       const { row, col } = screenToHex(e.clientX, e.clientY);
       const existing = humans.findIndex(h => {
         const atSrc = h.row === row && h.col === col;
@@ -1826,9 +1982,13 @@
     });
     window.addEventListener('mousemove', (e) => {
       if (isTerraformDragging) { paintTerrain(e.clientX, e.clientY); return; }
-      if (!isDragging) return;
-      camX = e.clientX - dragStartX;
-      camY = e.clientY - dragStartY;
+      if (isDragging) { camX = e.clientX - dragStartX; camY = e.clientY - dragStartY; return; }
+      if (!placingHuman && !terraformMode) {
+        const over = labelHitAreas.some(h =>
+          e.clientX >= h.x && e.clientX <= h.x + h.w &&
+          e.clientY >= h.y && e.clientY <= h.y + h.h);
+        canvas.style.cursor = over ? 'text' : '';
+      }
     });
     window.addEventListener('mouseup', () => {
       isDragging = false;
@@ -1867,6 +2027,5 @@
     canvas.addEventListener('touchend', () => { isDragging = false; lastTouchDist = null; });
 
     window.addEventListener('resize', () => {
-      canvas.width  = window.innerWidth;
-      canvas.height = window.innerHeight;
+      app.renderer.resize(window.innerWidth, window.innerHeight);
     });

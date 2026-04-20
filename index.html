@@ -5,10 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hexagon Grid</title>
   <link rel="stylesheet" href="styles.css">
+  <script src="pixi.min.js"></script>
 </head>
 <body>
-  <canvas id="canvas"></canvas>
-
   <div id="main-menu">
     <div id="menu-bg-canvas-wrapper">
       <canvas id="menu-canvas"></canvas>
@@ -47,9 +46,23 @@
         <button class="panel-btn terrain-opt" data-idx="4" title="Blocked" style="font-size:16px;padding:5px 0">❌</button>
       </div>
     </div>
-    <div id="year-panel">Year 0</div>
+    <div id="year-panel">
+      <div id="year-text">Year 0</div>
+      <div id="sim-controls">
+        <button id="pause-btn" class="panel-btn sim-btn">⏸</button>
+        <button class="panel-btn sim-btn speed-btn" data-speed="0.5">½×</button>
+        <button class="panel-btn sim-btn speed-btn active" data-speed="1">1×</button>
+        <button class="panel-btn sim-btn speed-btn" data-speed="2">2×</button>
+        <button class="panel-btn sim-btn speed-btn" data-speed="5">5×</button>
+      </div>
+    </div>
   </div>
 
+  <div id="stats-panel">
+    <div id="stats-header">Event Log</div>
+    <div id="stats-log"></div>
+  </div>
+  <input id="rename-input" type="text" maxlength="30" autocomplete="off" />
   <script src="script.js"></script>
 </body>
 </html>

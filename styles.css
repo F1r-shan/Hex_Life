@@ -107,8 +107,66 @@ canvas.placing  { cursor: crosshair; }
 #year-panel {
   background: rgba(0,0,0,0.78);
   border: 1px solid rgba(255,255,255,0.22);
-  border-radius: 10px; padding: 7px 16px;
+  border-radius: 10px; padding: 7px 12px;
   color: #fff; font: bold 13px monospace;
   backdrop-filter: blur(6px);
   text-align: center;
+  display: flex; flex-direction: column; gap: 6px;
 }
+#year-text { font: bold 13px monospace; }
+#sim-controls {
+  display: flex; gap: 4px; justify-content: center;
+}
+.sim-btn {
+  padding: 4px 7px; font-size: 12px; min-width: 28px;
+}
+.speed-btn.active {
+  background: rgba(120,180,255,0.30);
+  border-color: rgba(120,180,255,0.70);
+  color: #adf;
+}
+#pause-btn.paused {
+  background: rgba(255,180,80,0.25);
+  border-color: rgba(255,180,80,0.65);
+  color: #fdb;
+}
+#rename-input {
+  position: fixed; display: none; z-index: 200;
+  background: rgba(10,10,20,0.92); border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 5px; color: #fff; font: bold 14px sans-serif;
+  text-align: center; padding: 3px 6px; outline: none;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.6);
+}
+#stats-panel {
+  position: fixed; bottom: 16px; left: 16px;
+  width: 240px; max-height: 280px;
+  background: rgba(0,0,0,0.78); border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 10px; backdrop-filter: blur(6px);
+  display: flex; flex-direction: column;
+  opacity: 0; pointer-events: none; transition: opacity 0.5s ease;
+  z-index: 10;
+}
+#stats-panel.visible { opacity: 1; pointer-events: auto; }
+#stats-header {
+  color: rgba(255,255,255,0.55); font: 11px/1 sans-serif;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 8px 12px 6px; border-bottom: 1px solid rgba(255,255,255,0.1);
+  flex-shrink: 0;
+}
+#stats-log {
+  overflow-y: auto; flex: 1;
+  padding: 6px 0; scroll-behavior: smooth;
+}
+#stats-log::-webkit-scrollbar { width: 4px; }
+#stats-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+.stat-entry {
+  padding: 4px 12px; font: 12px sans-serif; color: rgba(255,255,255,0.82);
+  border-bottom: 1px solid rgba(255,255,255,0.05); line-height: 1.4;
+}
+.stat-entry .stat-year { color: rgba(255,255,255,0.38); font-size: 10px; margin-right: 4px; }
+.stat-entry.ev-war   { border-left: 2px solid rgba(255,80,80,0.7); }
+.stat-entry.ev-peace { border-left: 2px solid rgba(100,200,100,0.5); }
+.stat-entry.ev-ally  { border-left: 2px solid rgba(100,220,180,0.7); }
+.stat-entry.ev-born  { border-left: 2px solid rgba(120,180,255,0.7); }
+.stat-entry.ev-died  { border-left: 2px solid rgba(160,160,160,0.5); }
+.stat-entry.ev-rename{ border-left: 2px solid rgba(255,220,80,0.7); }
