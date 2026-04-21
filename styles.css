@@ -14,7 +14,7 @@ canvas.placing  { cursor: crosshair; }
   background: rgba(0,0,0,0.78);
   border: 1px solid rgba(255,255,255,0.22);
   border-radius: 10px; padding: 14px 16px;
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 10px;
   backdrop-filter: blur(6px);
 }
 #seed-panel label {
@@ -170,3 +170,77 @@ canvas.placing  { cursor: crosshair; }
 .stat-entry.ev-born  { border-left: 2px solid rgba(120,180,255,0.7); }
 .stat-entry.ev-died  { border-left: 2px solid rgba(160,160,160,0.5); }
 .stat-entry.ev-rename{ border-left: 2px solid rgba(255,220,80,0.7); }
+
+/* ── Panel toggle header ─────────────────────────────────── */
+#seed-panel-header {
+  display: flex; justify-content: space-between; align-items: center;
+}
+#seed-panel-header > span {
+  color: rgba(255,255,255,0.55); font: 11px/1 sans-serif;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+#panel-toggle { padding: 3px 9px; font-size: 14px; line-height: 1; min-width: 30px; }
+#seed-panel-body { display: flex; flex-direction: column; gap: 8px; }
+#seed-panel-body.collapsed { display: none; }
+
+/* ── Touch-friendly targets ──────────────────────────────── */
+@media (pointer: coarse) {
+  .panel-btn   { min-height: 44px; padding: 10px 12px; font-size: 14px; }
+  .sim-btn     { min-height: 40px; padding: 8px 10px; font-size: 13px; }
+  #panel-toggle { min-height: 36px; }
+  #seed-input  { padding: 11px 10px; font-size: 16px; }
+  #rename-input { font-size: 16px; } /* prevent iOS zoom */
+  #human-qty   { min-height: 44px; font-size: 15px !important; }
+}
+
+/* ── Portrait mobile ─────────────────────────────────────── */
+@media (max-width: 600px) and (orientation: portrait) {
+  #right-panels {
+    top: 8px; right: 8px;
+    min-width: 0; width: 220px;
+    max-height: 60vh;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #right-panels::-webkit-scrollbar { display: none; }
+  #year-panel { order: -1; }
+  #seed-panel { padding: 10px 12px; }
+  #stats-panel {
+    bottom: 0; left: 0; right: 0; top: auto;
+    width: 100%; max-height: 130px;
+    border-radius: 12px 12px 0 0;
+    border-bottom: none;
+  }
+}
+
+/* ── Landscape small screen ──────────────────────────────── */
+@media (max-height: 500px) and (orientation: landscape) {
+  #right-panels {
+    top: 6px; right: 6px;
+    max-height: calc(100vh - 12px);
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; min-width: 190px;
+  }
+  #right-panels::-webkit-scrollbar { display: none; }
+  #seed-panel { padding: 8px 11px; gap: 6px; }
+  #seed-panel-body { gap: 5px; }
+  .panel-btn { padding: 6px 9px; font-size: 12px; }
+  .sim-btn   { padding: 5px 7px; font-size: 11px; min-height: 0; }
+  #panel-toggle { padding: 2px 7px; }
+  #year-panel { padding: 5px 10px; gap: 4px; }
+  #year-text  { font-size: 12px; }
+  #stats-panel { bottom: 6px; left: 6px; max-height: 90px; width: 200px; }
+}
+
+/* ── Menu responsive ─────────────────────────────────────── */
+@media (max-width: 600px) {
+  #menu-title    { font-size: 58px; }
+  #menu-subtitle { font-size: 13px; letter-spacing: 0.12em; }
+  #menu-start-btn { padding: 14px 44px; font-size: 17px; }
+}
+@media (max-height: 420px) {
+  #menu-title    { font-size: 40px; }
+  #menu-content  { gap: 10px; }
+  #menu-subtitle { font-size: 12px; }
+  #menu-start-btn { margin-top: 4px; padding: 12px 36px; font-size: 15px; }
+}

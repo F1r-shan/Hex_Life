@@ -4,7 +4,12 @@
       "Bash(python3 -c \"import sys,json; lines=sys.stdin.read\\(\\).strip\\(\\).split\\('\\\\n'\\); [print\\(json.loads\\(l\\).get\\('content',''\\)[:2000] if isinstance\\(json.loads\\(l\\).get\\('content',''\\),str\\) else ''\\) for l in lines[-5:] if l]\")",
       "Bash(python3 *)",
       "Bash(node --check /c/Users/User/source/repos/F1r-shan/Hex_Life/script.js)",
-      "Bash(curl -L \"https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js\" -o \"C:/Users/User/source/repos/F1r-shan/Hex_Life/pixi.min.js\" --silent --show-error)"
+      "Bash(curl -L \"https://cdn.jsdelivr.net/npm/pixi.js@7/dist/pixi.min.js\" -o \"C:/Users/User/source/repos/F1r-shan/Hex_Life/pixi.min.js\" --silent --show-error)",
+      "Bash(mkdir -p /c/Users/User/source/repos/F1r-shan/Hex_Life/js)",
+      "Bash(sed -n '1,111p' script.js)",
+      "Bash(sed -n '112,311p' script.js)",
+      "Bash(sed -n '313,580p' script.js)",
+      "Bash(sed -n '582,1121p' script.js)"
     ]
   }
 }

@@ -1,84 +1,122 @@
 # Hex Life
 
-A browser-based god simulator on a procedurally generated hex grid. Watch civilizations rise, form alliances, go to war, and collapse — all on their own.
+A browser-based god simulator on a procedurally generated hex grid. Watch civilizations rise, form alliances, go to war, and collapse — entirely on their own.
 
-## Play
+No build step. No server. No dependencies. Open `index.html` and it runs.
 
-Open `index.html` directly in a browser. No build step, no server, no dependencies.
+---
+
+## Getting Started
+
+1. Open `index.html` in any modern browser
+2. Click **▶ Start** on the menu
+3. Tap **+ Add Human** then click a hex to place people
+4. Watch what happens
+
+---
 
 ## Controls
 
+### Desktop
+
 | Input | Action |
 |---|---|
-| Scroll | Zoom in / out |
-| Drag | Pan camera |
-| Pinch (touch) | Zoom |
+| Scroll wheel | Zoom in / out |
+| Click + drag | Pan camera |
+| Click label | Rename a settlement |
 
-### Panel (top-right)
+### Mobile
 
-- **World Seed** — type any text and click **Generate** to create a new world
-- **+ Add Human** — click to enter placement mode, then click a hex to place humans (set quantity 1–50); click an occupied hex to remove
-- **Emotions** — toggle emotion bubbles above humans
-- **Love Lines** — toggle dashed hearts between couples
-- **Village Zones** — toggle zone fills and labels
-- **Paint Terrain** — select a terrain type and drag to reshape the land
+| Input | Action |
+|---|---|
+| Single-finger drag | Pan camera |
+| Pinch | Zoom in / out |
+| Tap label | Rename a settlement |
+| **▾ / ▸** button | Collapse / expand the controls panel |
+
+---
+
+## Panel
+
+The **Controls** panel lives top-right. On mobile it auto-collapses — tap **▸** to expand.
+
+| Control | What it does |
+|---|---|
+| **World Seed** + Generate | Regenerates the world from any text seed |
+| **+ Add Human** + qty | Click a hex to place 1–50 humans; click an occupied hex to remove |
+| **Emotions** | Toggle speech bubbles above humans |
+| **Love Lines** | Toggle pink hearts between couples |
+| **Village Zones** | Toggle zone fills, borders, and settlement labels |
+| **🖊 Paint Terrain** | Select a terrain type and drag to reshape land |
+| **⏸ / ▶** | Pause / resume |
+| **½× 1× 2× 5×** | Simulation speed |
 
 Press **Esc** to cancel placement or painting.
 
+Click any **settlement label** to rename it.
+
+---
+
 ## Simulation
+
+### Terrain
+
+Five types — Water 🌊 and Blocked ❌ are unwalkable. Sand 🏖️, Grass 🌿, and Rock 🪨 are walkable. Use **Paint Terrain** to edit any hex. Changes persist across seed regenerations.
 
 ### Humans
 
 Each human has an age, gender, and zone membership. They walk around, fall in love, have children, build homes, and eventually die.
 
-- **Aging** — 1 real second = 1 simulation year. Death at 100, or earlier by random risk
-- **Love** — single adults near each other may form a couple (shown by a pink dashed line)
-- **Children** — male/female couples can have babies (twins 15%, triplets 3%); near a building the cooldown is shorter
-- **Walking** — zone members stay inside their zone; they leave if they step outside
-
-### Terrain
-
-Five types: 🌊 Water, 🏖️ Sand, 🌿 Grass, 🪨 Rock, ❌ Blocked. Water and Blocked are unwalkable. Use **Paint Terrain** to modify any hex.
+- **Aging** — 1 real second = 1 simulation year. Death at age 100, or sooner by random risk (risk rises steeply after 50)
+- **Emoji** — 👶 baby → 👧/👦 child → 👩/👨 adult → 👵/👴 elder
+- **Love** — single adults near each other may pair up (shown by a pink line with ❤️)
+- **Children** — male+female couple within range can have babies (twins 15%, triplets 3%); cooldown is shorter near a building
+- **Movement** — zone members stay inside their zone or allied zones; elders walk at half speed
 
 ### Settlements & Eras
 
-Couples build structures over time. Buildings cluster into zones with generated names (_Oakhaven_, _Stoneford_…).
+Couples build structures over time. Buildings cluster into **zones** with generated names (_Oakhaven_, _Stoneford_…). Each zone has a unique color.
 
-**Settlement tiers** grow with zone size (hex count):
+**Settlement tiers** scale with zone area (hex count):
 
 | Tier | Size |
 |---|---|
-| ⛺ Camp | 0–19 |
-| 🏘 Village | 20–39 |
-| 🏙 Town | 40–59 |
-| 🌆 City | 60–79 |
-| 🌇 Metropolis | 80+ |
+| ⛺ Camp | 0–19 hexes |
+| 🏘 Village | 20–39 hexes |
+| 🏙 Town | 40–59 hexes |
+| 🌆 City | 60–79 hexes |
+| 🌇 Metropolis | 80+ hexes |
 
-**Eras** advance with population:
+**Eras** advance as population grows:
 
-| Era | Population | Effect |
+| Era | Population | Bonus |
 |---|---|---|
-| 🪨 Stone Age | 0+ | baseline |
-| 🗡️ Iron Age | 10+ | faster building & births |
-| 🏰 Medieval | 25+ | stronger armies |
-| 👑 Kingdom | 50+ | significantly faster growth |
-| 🌍 Empire | 100+ | max bonuses |
+| 🪨 Stone Age | 0+ | Baseline |
+| 🗡️ Iron Age | 10+ | Faster building & births |
+| 🏰 Medieval | 25+ | Stronger armies |
+| 👑 Kingdom | 50+ | Significantly faster growth |
+| 🌍 Empire | 100+ | Maximum bonuses |
 
-Higher eras build faster, reproduce more quickly, and win wars more decisively.
+Large zones can **split** over time, spawning a new independent settlement.
 
 ### Diplomacy
 
-Neighboring zones interact over time:
+Neighboring zones interact automatically:
 
-- **Alliance** (green border 🤝) — zones form a pact. Members can walk into allied territory and allied soldiers join each other's wars. Lasts 10 years, then dissolves and soldiers return home.
-- **War** (red border ⚔️) — larger populations make war more likely. Zone members march to a rally point, form a group, then charge the enemy. Higher-era sides deal more kills per second. Wars end when one side is wiped out or zones stop touching.
+- **Alliance** 🤝 (green border) — zones form a pact. Members can walk into allied territory and joined soldiers fight together. Alliances last 10 years, then dissolve.
+- **War** ⚔️ (red border) — larger combined populations make war more likely. Soldiers rally at a particle, then charge the enemy. Higher-era sides deal more kills per second. Wars end when one side is wiped out or zones stop touching.
 
-War groups that can't find an enemy disband after 10 seconds.
+---
 
 ## Files
 
-| File | Contents |
+| Path | Contents |
 |---|---|
-| `index.html` | HTML structure and panel |
-| `styles.css` | All CSS |
-| `script.js` | All simulation and rendering logic |
+| `index.html` | HTML structure and UI markup |
+| `styles.css` | All CSS, including responsive mobile styles |
+| `js/core.js` | Renderer init, constants, terrain, seed, noise, hex geometry |
+| `js/humans.js` | Emotions, human data, movement, love, births, event log |
+| `js/zones.js` | Buildings, zones, alliances, wars (data), eras |
+| `js/simulation.js` | `updateHumans` — spatial grid, war particles, zone splitting |
+| `js/render.js` | Camera, PixiJS scene graph, `drawGrid`, animation loop |
+| `js/ui.js` | Main menu, seed panel, terraform, zoom, pan, touch, panel toggle |
