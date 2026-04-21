@@ -3,11 +3,26 @@
     let loveLinesOn = true;
     let zonesOn     = true;
 
-    const EMOTIONS = [
-      '😊', '😴', '🤔', '😤', '😂', '😨', '🥳', '😎', '🥺', '😇',
-      'Hi!', 'Tired…', 'Where am I?', 'Nice view!', 'I\'m hungry!',
-      'So peaceful', 'Hello?', 'Keep walking!', '⚔️', '🎵',
-    ];
+    const EMOTIONS_NEUTRAL = ['😊', '😴', '🤔', '😂', '😎', '🥳', '🎵', 'Nice view!', 'So peaceful', 'Keep walking!', 'Hello?'];
+    const EMOTIONS_LOVE    = ['❤️', '😍', '💕', '🥰', '😊', 'So happy!', 'Together!'];
+    const EMOTIONS_WAR     = ['⚔️', '😤', '💪', 'For the tribe!', 'Charge!', '🔥', '😡'];
+    const EMOTIONS_LONELY  = ['😔', '🥺', 'So alone…', 'Anyone?', '😞', 'Hello?'];
+    const EMOTIONS_ELDER   = ['😌', '😴', 'Tired…', 'Long life…', 'I remember…', '🧎'];
+    const EMOTIONS_CHILD   = ['😮', '👀', 'Where am I?', '🤩', '😁', 'Weeee!'];
+
+    function _epick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+    function contextEmotion(h) {
+      if (h.warGrouped) return _epick(EMOTIONS_WAR);
+      if (h.zoneId && wars.size > 0) {
+        for (const w of wars.values())
+          if (w.cidA === h.zoneId || w.cidB === h.zoneId) return _epick(EMOTIONS_WAR);
+      }
+      if (h.loveId) return _epick(EMOTIONS_LOVE);
+      if (h.age < 13) return _epick(EMOTIONS_CHILD);
+      if (h.age >= 60) return _epick(EMOTIONS_ELDER);
+      if (!h.loveId && h.age >= 16 && h.age < 50 && Math.random() < 0.4) return _epick(EMOTIONS_LONELY);
+      return _epick(EMOTIONS_NEUTRAL);
+    }
 
     const EMOTION_INTERVAL = 4000; // ms between changes
 
@@ -148,9 +163,7 @@
       h.toX   = tc.x; h.toY   = tc.y;
     }
 
-    function randomEmotion() {
-      return EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)];
-    }
+    function randomEmotion() { return _epick(EMOTIONS_NEUTRAL); }
 
     const BABY_COOLDOWN          = 9;  // default seconds between births
     const BABY_COOLDOWN_BUILDING = 3;  // near a building
@@ -158,7 +171,7 @@
     const BABY_MAX_AGE_F = 45;   // max age for female to have baby
     const BABY_MAX_AGE_M = 60;
 
-    function addHuman(row, col, age = 0, gender = null, zoneId = null) {
+    function addHuman(row, col, age = 0, gender = null, zoneId = null, generation = 0) {
       const { x, y } = hexCenter(row, col);
       const resolvedZone = age >= 16 ? (zoneId ?? zoneCluserIdAt(x, y)) : null;
       const human = {
@@ -176,6 +189,7 @@
         zoneId: resolvedZone,
         lastBabyAt: -BABY_COOLDOWN,
         birthAnim: null,
+        generation,
       };
       humans.push(human);
       humanById.set(human.id, human);

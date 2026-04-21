@@ -625,7 +625,8 @@
     renameInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { commitRename(); e.preventDefault(); }
       if (e.key === 'Escape') { renameInput.style.display = 'none'; }
-      e.stopPropagation();
+      // stop only non-undo keys so Ctrl+Z still reaches the document handler
+      if (!((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z'))) e.stopPropagation();
     });
     renameInput.addEventListener('blur', commitRename);
     renameInput.addEventListener('mousedown', (e) => e.stopPropagation());

@@ -149,8 +149,10 @@
       wars.clear();
       zoneNames.clear();
       zoneColors.clear();
+      zoneFoundedYear.clear();
       zoneHexes = new Set();
       hexClusterMap = new Map();
+      terrainUndoStack.length = 0;
       touchingPairsDirty = true;
       zoneRenderDirty = true;
       zoneRenderCache = { hexTierFill: new Map(), hexTierBorder: new Map(), hexRoot: new Map() };
@@ -196,8 +198,23 @@
     // ── Terraform ─────────────────────────────────────────────
     const terraformBtn    = document.getElementById('terraform-btn');
     const terrainSelector = document.getElementById('terrain-selector');
+    const terraformUndoBtn = document.getElementById('terraform-undo-btn');
     let terraformMode = false;
     let selectedTerrainIdx = 2; // default Grass
+    const terrainUndoStack = [];
+    const MAX_UNDO = 60;
+
+    function undoTerrain() {
+      if (!terrainUndoStack.length) return;
+      const { k, hadOverride, prev } = terrainUndoStack.pop();
+      terrainCache.delete(k);
+      if (hadOverride) terrainOverrides.set(k, prev);
+      else terrainOverrides.delete(k);
+      recomputeZones();
+      zoneRenderDirty = true;
+      touchingPairsDirty = true;
+      terraformUndoBtn.style.opacity = terrainUndoStack.length ? '1' : '0.4';
+    }
 
     function setSelectedTerrain(idx) {
       selectedTerrainIdx = idx;
@@ -214,8 +231,10 @@
       terraformBtn.style.background  = terraformMode ? 'rgba(255,200,50,0.22)' : '';
       terraformBtn.style.borderColor = terraformMode ? 'rgba(255,200,50,0.7)'  : '';
       terrainSelector.style.display  = terraformMode ? 'grid' : 'none';
+      terraformUndoBtn.style.display = terraformMode ? 'block' : 'none';
       if (terraformMode) cancelPlacing();
     });
+    terraformUndoBtn.addEventListener('click', undoTerrain);
 
     document.querySelectorAll('.terrain-opt').forEach((btn, i) => {
       btn.addEventListener('click', () => setSelectedTerrain(i));
@@ -224,17 +243,34 @@
     function paintTerrain(clientX, clientY) {
       const { row, col } = screenToHex(clientX, clientY);
       const k = (row << 16) ^ col;
+      terrainUndoStack.push({ k, hadOverride: terrainOverrides.has(k), prev: terrainOverrides.get(k) });
+      if (terrainUndoStack.length > MAX_UNDO) terrainUndoStack.shift();
       const t = TERRAIN[selectedTerrainIdx];
       terrainOverrides.set(k, t);
       terrainCache.set(k, t);
       recomputeZones();
       zoneRenderDirty = true;
       touchingPairsDirty = true;
+      terraformUndoBtn.style.opacity = '1';
     }
 
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { cancelPlacing(); if (terraformMode) { terraformMode = false; terraformBtn.textContent = '🖊 Paint Terrain'; terraformBtn.style.background = ''; terraformBtn.style.borderColor = ''; terrainSelector.style.display = 'none'; } } });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        cancelPlacing();
+        document.getElementById('zone-stats-popup').style.display = 'none'; _zspClusterId = null;
+        if (terraformMode) {
+          terraformMode = false;
+          terraformBtn.textContent = '🖊 Paint Terrain';
+          terraformBtn.style.background = ''; terraformBtn.style.borderColor = '';
+          terrainSelector.style.display = 'none';
+          terraformUndoBtn.style.display = 'none';
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z' || e.code === 'KeyZ')) { e.preventDefault(); undoTerrain(); }
+    });
     document.getElementById('right-panels').addEventListener('mousedown', (e) => e.stopPropagation());
     statsPanel.addEventListener('mousedown', (e) => e.stopPropagation());
+    document.getElementById('zone-stats-popup').addEventListener('mousedown', (e) => e.stopPropagation());
 
     canvas.addEventListener('click', (e) => {
       if (terraformMode) { paintTerrain(e.clientX, e.clientY); return; }
@@ -242,10 +278,11 @@
         for (const hit of labelHitAreas) {
           if (e.clientX >= hit.x && e.clientX <= hit.x + hit.w &&
               e.clientY >= hit.y && e.clientY <= hit.y + hit.h) {
-            showRenameInput(hit.clusterId, hit.x, hit.y, hit.w);
+            showZoneStats(hit.clusterId, hit.x, hit.y, hit.w);
             return;
           }
         }
+        document.getElementById('zone-stats-popup').style.display = 'none'; _zspClusterId = null;
         return;
       }
       const { row, col } = screenToHex(e.clientX, e.clientY);
@@ -339,6 +376,95 @@
     window.addEventListener('resize', () => {
       app.renderer.resize(window.innerWidth, window.innerHeight);
     });
+
+    // ── Zone stats popup ─────────────────────────────────────
+    let _zspClusterId = null;
+
+    function _zspDiplomacy(clusterId) {
+      for (const w of wars.values()) {
+        if (w.cidA === clusterId || w.cidB === clusterId) {
+          const enemy = w.cidA === clusterId ? w.cidB : w.cidA;
+          return `⚔️ At war with <b>${zoneNameFor(enemy)}</b>`;
+        }
+      }
+      for (const al of alliances.values()) {
+        if (al.cidA === clusterId || al.cidB === clusterId) {
+          const ally = al.cidA === clusterId ? al.cidB : al.cidA;
+          return `🤝 Allied with <b>${zoneNameFor(ally)}</b>`;
+        }
+      }
+      return '';
+    }
+
+    function _zspRefresh() {
+      const popup = document.getElementById('zone-stats-popup');
+      if (!_zspClusterId || popup.style.display === 'none') { _zspClusterId = null; return; }
+
+      const cid  = _zspClusterId;
+      const era  = ERAS[clusterEras.get(cid) ?? 0];
+      const vc   = villageClustersCache.find(v => v.clusterId === cid);
+      const tier = settlementTier(vc ? vc.hexCount : 0);
+      const pop  = zonePopMap.get(cid) || 0;
+      const maxGen = humans.reduce((m, h) => h.zoneId === cid ? Math.max(m, h.generation || 0) : m, 0);
+      const diplo = _zspDiplomacy(cid);
+
+      const eraEl   = popup.querySelector('.zsp-live-era');
+      const popEl   = popup.querySelector('.zsp-live-pop');
+      const genEl   = popup.querySelector('.zsp-live-gen');
+      const diploEl = popup.querySelector('.zsp-live-diplo');
+
+      if (eraEl)   eraEl.textContent = `${era.emoji} ${era.name} · ${tier.label}`;
+      if (popEl)   popEl.textContent = `👤 ${pop} resident${pop !== 1 ? 's' : ''}`;
+      if (genEl) {
+        genEl.textContent = maxGen > 0 ? `🌱 Generation ${maxGen}` : '';
+        genEl.style.display = maxGen > 0 ? '' : 'none';
+      }
+      if (diploEl) {
+        diploEl.innerHTML = diplo;
+        diploEl.style.display = diplo ? '' : 'none';
+      }
+
+      requestAnimationFrame(_zspRefresh);
+    }
+
+    function showZoneStats(clusterId, px, py, pw) {
+      const popup = document.getElementById('zone-stats-popup');
+      const name      = zoneNameFor(clusterId);
+      const foundedYr = zoneFoundedYear.get(clusterId);
+
+      popup.innerHTML = `
+        <div class="zsp-header">
+          <span class="zsp-name">${name}</span>
+          <button id="zsp-close">✕</button>
+        </div>
+        <div class="zsp-row zsp-live-era"></div>
+        <div class="zsp-row zsp-live-pop"></div>
+        ${foundedYr !== undefined ? `<div class="zsp-row">📅 Founded year ${foundedYr}</div>` : ''}
+        <div class="zsp-row zsp-live-gen" style="display:none"></div>
+        <div class="zsp-row zsp-diplo zsp-live-diplo" style="display:none"></div>
+        <div class="zsp-actions"><button id="zsp-rename">✏ Rename</button></div>
+      `;
+
+      const vw = window.innerWidth;
+      const popW = 200;
+      let left = px, top = py - 148;
+      if (left + popW > vw - 8) left = vw - popW - 8;
+      if (left < 8) left = 8;
+      if (top < 8) top = py + 36;
+      popup.style.left = left + 'px';
+      popup.style.top  = top + 'px';
+      popup.style.display = 'block';
+
+      document.getElementById('zsp-close').onclick  = () => { popup.style.display = 'none'; _zspClusterId = null; };
+      document.getElementById('zsp-rename').onclick = () => {
+        popup.style.display = 'none'; _zspClusterId = null;
+        showRenameInput(clusterId, px, py, pw);
+      };
+
+      const wasRunning = _zspClusterId !== null;
+      _zspClusterId = clusterId;
+      if (!wasRunning) requestAnimationFrame(_zspRefresh);
+    }
 
     // ── Panel toggle ─────────────────────────────────────────
     (function setupPanelToggle() {

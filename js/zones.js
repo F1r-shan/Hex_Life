@@ -8,8 +8,9 @@
     const ZONE_MERGE   = ZONE_RADIUS * 2; // buildings closer than this merge zones
 
     // Zone names: clusterId → string
-    const zoneNames  = new Map();
-    const zoneColors = new Map(); // clusterId → hue (0–360)
+    const zoneNames       = new Map();
+    const zoneColors      = new Map(); // clusterId → hue (0–360)
+    const zoneFoundedYear = new Map(); // clusterId → simYear at founding
     function zoneColorFor(clusterId) {
       if (!zoneColors.has(clusterId)) {
         // deterministic but visually spread hue from cluster id string
@@ -72,11 +73,23 @@
         });
       }
     }
-    function endWar(a, b) {
+    function endWar(a, b, winner = null) {
       const k = warKey(a, b);
       const w = wars.get(k);
       if (w) {
-        logEvent('peace', `🕊️ War ended: <b>${zoneNameFor(a)}</b> & <b>${zoneNameFor(b)}</b>`);
+        let msg;
+        if (winner === 'a')
+          msg = `⚔️ <b>${zoneNameFor(a)}</b> defeated <b>${zoneNameFor(b)}</b>`;
+        else if (winner === 'b')
+          msg = `⚔️ <b>${zoneNameFor(b)}</b> defeated <b>${zoneNameFor(a)}</b>`;
+        else {
+          const mA = w.particles[a]?.memberIds.size || 0;
+          const mB = w.particles[b]?.memberIds.size || 0;
+          if (mA > mB)      msg = `🕊️ <b>${zoneNameFor(a)}</b> won the battle`;
+          else if (mB > mA) msg = `🕊️ <b>${zoneNameFor(b)}</b> won the battle`;
+          else              msg = `🕊️ Ceasefire: <b>${zoneNameFor(a)}</b> & <b>${zoneNameFor(b)}</b>`;
+        }
+        logEvent('peace', msg);
         for (const p of Object.values(w.particles))
           for (const id of p.memberIds) {
             const h = humanById.get(id);

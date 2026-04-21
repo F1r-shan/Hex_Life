@@ -119,7 +119,7 @@
         // Emotion cycle
         const eAge = now - h.emotionAt;
         if (eAge > EMOTION_INTERVAL) {
-          h.emotion   = randomEmotion();
+          h.emotion   = contextEmotion(h);
           h.emotionAt = now;
         }
         const fadeMs = 600;
@@ -177,8 +177,9 @@
                   for (let k = 0; k < count - 1 && k < extras.length; k++)
                     candidates.push(extras[k]);
                 }
+                const babyGen = Math.max(h.generation || 0, partner.generation || 0) + 1;
                 for (const s of candidates)
-                  addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', null);
+                  addHuman(s.row, s.col, 0, Math.random() < 0.5 ? 'male' : 'female', null, babyGen);
                 h.lastBabyAt = simTime;
                 partner.lastBabyAt = simTime;
                 h.birthAnim = { wx: midX, wy: midY, alpha: 1, count };
@@ -215,6 +216,7 @@
                 } else {
                   clusterId = Math.random().toString(36).slice(2);
                   zoneNameFor(clusterId); // register name immediately
+                  zoneFoundedYear.set(clusterId, Math.floor(simYear));
                   logEvent('born', `🏛️ <b>${zoneNameFor(clusterId)}</b> founded`);
                   // Couple founds a new zone — always move to it (even if previously bound elsewhere)
                   h.zoneId = clusterId;
@@ -451,7 +453,10 @@
         const aAlive = (zonePopMap.get(w.cidA) || 0) > 0;
         const bAlive = (zonePopMap.get(w.cidB) || 0) > 0;
         const stillTouch = touchingPairs.has(k);
-        if (!aAlive || !bAlive || !stillTouch) { endWar(w.cidA, w.cidB); }
+        if (!aAlive || !bAlive || !stillTouch) {
+          const winner = !bAlive && aAlive ? 'a' : !aAlive && bAlive ? 'b' : null;
+          endWar(w.cidA, w.cidB, winner);
+        }
       }
 
       // Remove zones whose cluster has no living residents (skip clusters actively at war)
