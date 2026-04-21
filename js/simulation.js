@@ -478,9 +478,9 @@
           for (const cid of clusterEras.keys()) {
             if (!buildings.some(b => b.clusterId === cid)) clusterEras.delete(cid);
           }
-          for (const [k, w] of wars) {
+          for (const [, w] of [...wars]) {
             if (!buildings.some(b => b.clusterId === w.cidA) ||
-                !buildings.some(b => b.clusterId === w.cidB)) wars.delete(k);
+                !buildings.some(b => b.clusterId === w.cidB)) endWar(w.cidA, w.cidB);
           }
         }
       }

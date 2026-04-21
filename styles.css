@@ -104,6 +104,77 @@ canvas.placing  { cursor: crosshair; }
 
 /* ── End Main Menu ── */
 
+/* ── Help button (on menu) ── */
+#menu-help-btn {
+  padding: 10px 32px;
+  font: 500 14px sans-serif;
+  letter-spacing: 0.1em;
+  color: rgba(180, 210, 255, 0.75);
+  background: transparent;
+  border: 1px solid rgba(120, 180, 255, 0.3);
+  border-radius: 50px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+#menu-help-btn:hover {
+  color: rgba(200, 230, 255, 1);
+  border-color: rgba(160, 210, 255, 0.65);
+}
+
+/* ── Help modal ── */
+#help-modal {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.62);
+  backdrop-filter: blur(4px);
+  transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+#help-modal.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+
+#help-box {
+  background: rgba(8, 14, 30, 0.94);
+  border: 1px solid rgba(120, 180, 255, 0.3);
+  border-radius: 14px;
+  padding: 28px 32px 24px;
+  max-width: 440px; width: calc(100% - 40px);
+  color: rgba(220, 235, 255, 0.88);
+  font: 14px/1.6 sans-serif;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+}
+#help-box h2 {
+  font: 700 20px sans-serif; color: #fff;
+  margin-bottom: 14px; letter-spacing: 0.05em;
+}
+#help-box h3 {
+  font: 600 13px sans-serif; color: rgba(160,200,255,0.75);
+  text-transform: uppercase; letter-spacing: 0.1em;
+  margin: 16px 0 6px;
+}
+#help-box ol {
+  padding-left: 18px; margin: 0 0 4px;
+}
+#help-box ol li { margin-bottom: 8px; }
+#help-box table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+#help-box table td {
+  padding: 4px 8px 4px 0; color: rgba(210,225,255,0.8);
+}
+#help-box table td:first-child {
+  color: rgba(255,255,255,0.55); white-space: nowrap; padding-right: 16px;
+}
+#help-box p { font-size: 13px; margin-top: 4px; }
+#help-close-btn {
+  display: block; margin: 20px auto 0;
+  padding: 10px 40px;
+  font: 600 14px sans-serif; letter-spacing: 0.08em; color: #fff;
+  background: rgba(50,120,255,0.28);
+  border: 1px solid rgba(120,180,255,0.5);
+  border-radius: 50px; cursor: pointer;
+  transition: background 0.2s;
+}
+#help-close-btn:hover { background: rgba(80,150,255,0.45); }
+
 #year-panel {
   background: rgba(0,0,0,0.78);
   border: 1px solid rgba(255,255,255,0.22);

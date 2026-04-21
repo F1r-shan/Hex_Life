@@ -154,6 +154,7 @@
       touchingPairsDirty = true;
       zoneRenderDirty = true;
       zoneRenderCache = { hexTierFill: new Map(), hexTierBorder: new Map(), hexRoot: new Map() };
+      lastTime = null;
       drawGrid(performance.now());
     }
     seedBtn.addEventListener('click', generate);
@@ -322,6 +323,7 @@
         camY = e.touches[0].clientY - dragStartY;
       } else if (e.touches.length === 2) {
         const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+        if (!lastTouchDist) { lastTouchDist = dist; return; }
         const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - canvas.width/2;
         const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - canvas.height/2;
         const ns = Math.min(10, Math.max(0.1, scale * dist / lastTouchDist));
@@ -356,4 +358,14 @@
       window.addEventListener('resize', () => {
         if (isMobile() && !body.classList.contains('collapsed')) setCollapsed(true);
       }, { passive: true });
+    })();
+
+    // ── Help modal ────────────────────────────────────────────
+    (function setupHelp() {
+      const modal    = document.getElementById('help-modal');
+      const openBtn  = document.getElementById('menu-help-btn');
+      const closeBtn = document.getElementById('help-close-btn');
+      openBtn.addEventListener('click',  () => modal.classList.remove('hidden'));
+      closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
+      modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
     })();

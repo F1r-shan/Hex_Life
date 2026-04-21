@@ -65,10 +65,18 @@
     const buildCtr      = new PIXI.Container(); // building sprites
     const loveGfx       = new PIXI.Graphics(); // love lines + heart sprites
     const sparkleCtr    = new PIXI.Container(); // birth / part sparkles
-    const humanCtr      = new PIXI.Container(); // human containers (pooled)
+    // Human rendering — split into 4 layers so each is a tight ParticleContainer
+    // shadowPCtr: ONE shared texture → ParticleContainer is safe and fast here
+    const shadowPCtr    = new PIXI.ParticleContainer(3000, { vertices: true, position: true, alpha: true });
+    // humanPCtr / badgePCtr: many different textures → ParticleContainer only binds one base texture
+    // so these must stay as regular Containers; pre-baked textures still give the big speedup
+    const humanPCtr     = new PIXI.Container();
+    const badgePCtr     = new PIXI.Container();
+    const bubbleCtr     = new PIXI.Container();                         // speech bubbles (regular; few visible)
     const warGfx        = new PIXI.Graphics(); // war lines + particles
     worldCtr.addChild(terrainGfx, terrainEmoCtr, zoneFillGfx, zoneBorderGfx,
-                      buildCtr, loveGfx, sparkleCtr, humanCtr, warGfx);
+                      buildCtr, loveGfx, sparkleCtr,
+                      shadowPCtr, humanPCtr, badgePCtr, bubbleCtr, warGfx);
 
     // Screen-space UI layer
     const uiGfx = new PIXI.Graphics();  // label background pills
@@ -84,20 +92,88 @@
     });
 
     // ── Human sprite pool ────────────────────────────────────
-    const _hPool = new Map(); // h.id → { ctr, shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr, _c }
+    // Shadow: one shared RenderTexture (black ellipse, alpha controlled per-sprite)
+    const SHADOW_TEX = (() => {
+      const g = new PIXI.Graphics();
+      g.beginFill(0x000000, 1);
+      g.drawEllipse(0, 0, HEX_SIZE * 0.22, HEX_SIZE * 0.09);
+      g.endFill();
+      const t = app.renderer.generateTexture(g, PIXI.SCALE_MODES.LINEAR, 1);
+      g.destroy(); return t;
+    })();
+
+    // Badge: pre-baked rounded-pill + text, cached by "gender[0]+ageInt" (max ~200 entries)
+    const _badgeTexCache = new Map();
+    function getBadgeTex(gender, ageInt) {
+      const key = gender[0] + ageInt;
+      if (_badgeTexCache.has(key)) return _badgeTexCache.get(key);
+      const badgeFs = Math.max(6, HEX_SIZE * 0.22);
+      const gSym    = gender === 'female' ? '♀' : '♂';
+      const ageText = gSym + ageInt;
+      const badgeW  = badgeFs * (ageText.length * 0.72 + 0.6);
+      const badgeH  = badgeFs * 1.4;
+      const ratio   = ageInt / MAX_AGE, isFem = gender === 'female';
+      const cr = Math.round(lerp(isFem?200:60,  220, ratio));
+      const cg = Math.round(lerp(isFem?100:140, 50,  ratio));
+      const cb = Math.round(lerp(isFem?160:220, 50,  ratio));
+      const bg = new PIXI.Graphics();
+      bg.beginFill(((cr<<16)|(cg<<8)|cb) >>> 0, 1);
+      bg.drawRoundedRect(0, 0, badgeW, badgeH, badgeH / 2);
+      bg.endFill();
+      const ts = new PIXI.Sprite(emojiTex(ageText, badgeFs, 'bold sans-serif', '#ffffff'));
+      ts.anchor.set(0.5); ts.x = badgeW / 2; ts.y = badgeH / 2;
+      ts.width = ts.height = badgeFs * 1.2;
+      const wrap = new PIXI.Container(); wrap.addChild(bg, ts);
+      const tex = app.renderer.generateTexture(wrap, PIXI.SCALE_MODES.LINEAR, 1,
+        new PIXI.Rectangle(0, 0, badgeW, badgeH));
+      wrap.destroy({ children: true });
+      _badgeTexCache.set(key, { tex, badgeW, badgeH }); return _badgeTexCache.get(key);
+    }
+
+    // Bubble: pre-baked rounded rect + tail + emotion content, cached by emotion string (~20 entries)
+    const _bubTexCache = new Map();
+    function getBubbleTex(emotion) {
+      if (_bubTexCache.has(emotion)) return _bubTexCache.get(emotion);
+      const isEmo   = /\p{Emoji}/u.test(emotion) && emotion.length <= 2;
+      const efs     = isEmo ? Math.max(10, HEX_SIZE*0.48) : Math.max(8, HEX_SIZE*0.28);
+      const pad     = HEX_SIZE * 0.13;
+      const textTex = emojiTex(emotion, efs, isEmo ? 'serif' : 'sans-serif', isEmo ? null : '#222222');
+      const contH   = efs * 1.4;
+      const contW   = contH * (textTex.width / textTex.height);
+      const bw      = contW + pad * 2;
+      const bh      = efs  + pad * 1.4;
+      const tailH   = HEX_SIZE * 0.16;
+      const totalH  = bh + tailH;
+      const bg = new PIXI.Graphics();
+      bg.beginFill(0xffffff, 0.92);
+      bg.lineStyle(0.8, 0x000000, 0.15);
+      bg.drawRoundedRect(0, 0, bw, bh, bh / 2);
+      bg.moveTo(bw/2 + HEX_SIZE*0.08, bh);
+      bg.lineTo(bw/2,                  bh + tailH);
+      bg.lineTo(bw/2 - HEX_SIZE*0.08, bh);
+      bg.endFill();
+      const ts = new PIXI.Sprite(textTex);
+      ts.anchor.set(0.5); ts.x = bw/2; ts.y = bh/2; ts.width = contW; ts.height = contH;
+      const wrap = new PIXI.Container(); wrap.addChild(bg, ts);
+      const tex = app.renderer.generateTexture(wrap, PIXI.SCALE_MODES.LINEAR, 1,
+        new PIXI.Rectangle(0, 0, bw, totalH));
+      wrap.destroy({ children: true });
+      _bubTexCache.set(emotion, { tex, bw, bh, totalH }); return _bubTexCache.get(emotion);
+    }
+
+    // Pool: id → { shadowSpr, humanSpr, badgeSpr, bubSpr, _c }
+    const _hPool = new Map();
     function ensureHuman(h) {
       if (_hPool.has(h.id)) return _hPool.get(h.id);
-      const ctr      = new PIXI.Container();
-      const shadow   = new PIXI.Graphics();
-      const emoSpr   = new PIXI.Sprite(PIXI.Texture.EMPTY); emoSpr.anchor.set(0.5);
-      const badgeGfx = new PIXI.Graphics();
+      const shadowSpr = new PIXI.Sprite(SHADOW_TEX); shadowSpr.anchor.set(0.5);
+      shadowPCtr.addChild(shadowSpr);
+      const humanSpr = new PIXI.Sprite(PIXI.Texture.EMPTY); humanSpr.anchor.set(0.5);
+      humanPCtr.addChild(humanSpr);
       const badgeSpr = new PIXI.Sprite(PIXI.Texture.EMPTY); badgeSpr.anchor.set(0.5);
-      const bubbGfx  = new PIXI.Graphics();
-      const bubbSpr  = new PIXI.Sprite(PIXI.Texture.EMPTY); bubbSpr.anchor.set(0.5);
-      ctr.addChild(shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr);
-      humanCtr.addChild(ctr);
-      const rec = { ctr, shadow, emoSpr, badgeGfx, badgeSpr, bubbGfx, bubbSpr,
-                    _c: { emoji: '', age: -1, emo: '' } };
+      badgePCtr.addChild(badgeSpr);
+      const bubSpr = new PIXI.Sprite(PIXI.Texture.EMPTY); bubSpr.anchor.set(0.5, 0);
+      bubbleCtr.addChild(bubSpr);
+      const rec = { shadowSpr, humanSpr, badgeSpr, bubSpr, _c: { emoji: '', age: -1, emo: '' } };
       _hPool.set(h.id, rec); return rec;
     }
 
@@ -126,8 +202,6 @@
     let _zoneBorders = [];         // [{ x1,y1,x2,y2,cidA,cidB }]
     let _zoneFillData = new Map(); // fillInt → { alpha, keys[] }
 
-    function drawHex(_cx, _cy, _size, _terrain) {}
-
     function drawGrid(now) {
       // Apply camera transform to world container
       worldCtr.x = canvas.width  / 2 + camX;
@@ -142,6 +216,9 @@
       const colEnd   = Math.ceil((originX + viewW) / WW) + 1;
       const rowStart = Math.floor(originY / RH) - 1;
       const rowEnd   = Math.ceil((originY + viewH) / RH) + 1;
+
+      // LOD: hide individuals when zoomed out too far
+      const showHumans = scale >= 0.35;
 
       // ── Terrain hex tiles (batched fills by colour) ──────────
       terrainGfx.clear();
@@ -177,6 +254,12 @@
 
       // ── Zone fills + borders ─────────────────────────────────
       if (zonesOn && zoneHexes.size > 0) {
+        if (zoneRenderDirty && !buildings.length) {
+          villageClustersCache = [];
+          zoneFillGfx.clear();
+          _tierEdges = new Map(); _zoneBorders = [];
+          zoneRenderDirty = false;
+        }
         if (zoneRenderDirty && buildings.length) {
           const parent2 = buildings.map((_, i) => i);
           function find2(i) { return parent2[i] === i ? i : (parent2[i] = find2(parent2[i])); }
@@ -316,7 +399,7 @@
 
       // ── Love lines ───────────────────────────────────────────
       loveGfx.removeChildren(); loveGfx.clear();
-      if (loveLinesOn) {
+      if (loveLinesOn && showHumans) {
         const pulse = 0.55 + 0.45 * Math.sin(now * 0.004);
         const drawn = new Set();
         for (const h of humans) {
@@ -335,7 +418,7 @@
 
       // ── Sparkles ─────────────────────────────────────────────
       sparkleCtr.removeChildren();
-      for (const h of humans) {
+      if (showHumans) for (const h of humans) {
         if (h.partAnim) {
           const { wx, wy, alpha } = h.partAnim;
           const s = emojiSprite('💔', Math.max(8, HEX_SIZE * 0.45));
@@ -355,89 +438,83 @@
       }
 
       // ── Humans ───────────────────────────────────────────────
+      // Remove sprites for humans that have been deleted (always run)
       for (const [id, rec] of _hPool) {
-        if (!humanById.has(id)) { rec.ctr.parent && rec.ctr.parent.removeChild(rec.ctr); _hPool.delete(id); }
+        if (!humanById.has(id)) {
+          shadowPCtr.removeChild(rec.shadowSpr);
+          humanPCtr.removeChild(rec.humanSpr);
+          badgePCtr.removeChild(rec.badgeSpr);
+          bubbleCtr.removeChild(rec.bubSpr);
+          _hPool.delete(id);
+        }
       }
-      for (const h of humans) {
-        if (h.warGrouped) { if (_hPool.has(h.id)) _hPool.get(h.id).ctr.visible = false; continue; }
-        const rec = ensureHuman(h);
-        rec.ctr.visible = true;
-        rec.ctr.x = h.wx; rec.ctr.y = h.wy;
-        rec.ctr.alpha = h.dyingAlpha ?? 1;
+      shadowPCtr.visible = humanPCtr.visible = badgePCtr.visible = bubbleCtr.visible = sparkleCtr.visible = showHumans;
+      const fs = Math.max(10, HEX_SIZE * 0.58);
+      if (showHumans) for (const h of humans) {
+        if (h.warGrouped) {
+          if (_hPool.has(h.id)) {
+            const r = _hPool.get(h.id);
+            r.shadowSpr.visible = r.humanSpr.visible = r.badgeSpr.visible = r.bubSpr.visible = false;
+          }
+          continue;
+        }
+        const rec   = ensureHuman(h);
+        const alpha = h.dyingAlpha ?? 1;
+        const bob   = h.t < 1 ? Math.abs(Math.sin(now * 0.008)) * HEX_SIZE * (h.age >= 60 ? 0.06 : 0.12) : 0;
 
-        const moving = h.t < 1;
-        const bob = moving ? Math.abs(Math.sin(now * 0.008)) * HEX_SIZE * (h.age >= 60 ? 0.06 : 0.12) : 0;
+        // Shadow — static pre-baked texture, just reposition each frame
+        rec.shadowSpr.visible = true;
+        rec.shadowSpr.x = h.wx;
+        rec.shadowSpr.y = h.wy + HEX_SIZE * 0.25;
+        rec.shadowSpr.alpha = alpha * 0.35;
 
-        rec.shadow.clear();
-        rec.shadow.beginFill(0x000000, 0.35);
-        rec.shadow.drawEllipse(0, HEX_SIZE*0.25, HEX_SIZE*0.22, HEX_SIZE*0.09);
-        rec.shadow.endFill();
-
+        // Human emoji — texture cached; update only when life-stage changes
         const humanEmoji = emojiForAge(h.age, h.gender);
-        const fs = Math.max(10, HEX_SIZE * 0.58);
         if (rec._c.emoji !== humanEmoji) {
-          rec.emoSpr.texture = emojiTex(humanEmoji, fs);
-          rec.emoSpr.width = rec.emoSpr.height = fs * 1.4;
+          rec.humanSpr.texture = emojiTex(humanEmoji, fs);
+          rec.humanSpr.width = rec.humanSpr.height = fs * 1.4;
           rec._c.emoji = humanEmoji;
         }
-        rec.emoSpr.y = -HEX_SIZE * 0.08 - bob;
+        rec.humanSpr.visible = true;
+        rec.humanSpr.x = h.wx;
+        rec.humanSpr.y = h.wy - HEX_SIZE * 0.08 - bob;
+        rec.humanSpr.alpha = alpha;
 
-        const ageInt  = Math.floor(h.age);
-        const badgeFs = Math.max(6, HEX_SIZE * 0.22);
-        const gSym    = h.gender === 'female' ? '♀' : '♂';
-        const ageText = gSym + ageInt;
-        const badgeW  = badgeFs * (ageText.length * 0.72 + 0.6);
-        const badgeH  = badgeFs * 1.4;
-        const bxOff   = HEX_SIZE * 0.22;
-        const byOff   = -HEX_SIZE * 0.38 - bob;
-        const ageRatio = h.age / MAX_AGE, isFem = h.gender === 'female';
-        const br = Math.round(lerp(isFem?200:60, 220, ageRatio));
-        const bg = Math.round(lerp(isFem?100:140, 50, ageRatio));
-        const bb = Math.round(lerp(isFem?160:220, 50, ageRatio));
-        rec.badgeGfx.clear();
-        rec.badgeGfx.beginFill(((br<<16)|(bg<<8)|bb)>>>0, 1);
-        rec.badgeGfx.drawRoundedRect(bxOff-badgeW/2, byOff-badgeH/2, badgeW, badgeH, badgeH/2);
-        rec.badgeGfx.endFill();
+        // Age/gender badge — pre-baked texture; update only when age integer changes
+        const ageInt = Math.floor(h.age);
         if (rec._c.age !== ageInt) {
-          rec.badgeSpr.texture = emojiTex(ageText, badgeFs, 'bold sans-serif', '#ffffff');
-          rec.badgeSpr.width = rec.badgeSpr.height = badgeFs * 1.2;
+          const bd = getBadgeTex(h.gender, ageInt);
+          rec.badgeSpr.texture = bd.tex;
+          rec.badgeSpr.width   = bd.badgeW;
+          rec.badgeSpr.height  = bd.badgeH;
           rec._c.age = ageInt;
         }
-        rec.badgeSpr.x = bxOff; rec.badgeSpr.y = byOff;
+        rec.badgeSpr.visible = true;
+        rec.badgeSpr.x = h.wx + HEX_SIZE * 0.22;
+        rec.badgeSpr.y = h.wy - HEX_SIZE * 0.38 - bob;
+        rec.badgeSpr.alpha = alpha;
 
-        const eAge = now - h.emotionAt;
+        // Emotion bubble — pre-baked texture; alpha fade on sprite, no per-frame Graphics
+        const eAge   = now - h.emotionAt;
         const fadeMs = 600;
-        let eAlpha = 1;
-        if (eAge < fadeMs)                         eAlpha = eAge / fadeMs;
-        else if (eAge > EMOTION_INTERVAL - fadeMs) eAlpha = (EMOTION_INTERVAL - eAge) / fadeMs;
+        let eAlpha   = eAge < fadeMs ? eAge / fadeMs
+                     : eAge > EMOTION_INTERVAL - fadeMs ? (EMOTION_INTERVAL - eAge) / fadeMs : 1;
         eAlpha = Math.max(0, Math.min(1, eAlpha));
         const showBubble = emotionsOn && eAlpha > 0.01;
-        rec.bubbGfx.visible = rec.bubbSpr.visible = showBubble;
         if (showBubble) {
-          const bubY  = -HEX_SIZE * 0.82 - bob;
-          const isEmo = /\p{Emoji}/u.test(h.emotion) && h.emotion.length <= 2;
-          const efs   = isEmo ? Math.max(10, HEX_SIZE*0.48) : Math.max(8, HEX_SIZE*0.28);
-          const pad   = HEX_SIZE * 0.13;
-          // Update texture first so we can size the bubble from the real sprite width
+          const bd = getBubbleTex(h.emotion); // O(1) cache lookup
           if (rec._c.emo !== h.emotion) {
-            const tex = emojiTex(h.emotion, efs, isEmo?'serif':'sans-serif', isEmo?null:'#222222');
-            rec.bubbSpr.texture = tex;
-            rec.bubbSpr.height = efs * 1.4;
-            rec.bubbSpr.width  = rec.bubbSpr.height * (tex.width / tex.height);
+            rec.bubSpr.texture = bd.tex;
+            rec.bubSpr.width   = bd.bw;
+            rec.bubSpr.height  = bd.totalH;
             rec._c.emo = h.emotion;
           }
-          const bw2 = rec.bubbSpr.width + pad * 2;
-          const bh2 = efs + pad * 1.4;
-          rec.bubbGfx.clear();
-          rec.bubbGfx.alpha = eAlpha;
-          rec.bubbGfx.beginFill(0xffffff, 0.92);
-          rec.bubbGfx.lineStyle(0.8/scale, 0x000000, 0.15);
-          rec.bubbGfx.drawRoundedRect(-bw2/2, bubY-bh2/2, bw2, bh2, bh2/2);
-          rec.bubbGfx.moveTo(HEX_SIZE*0.08, bubY+bh2/2);
-          rec.bubbGfx.lineTo(0, bubY+bh2/2+HEX_SIZE*0.16);
-          rec.bubbGfx.lineTo(-HEX_SIZE*0.08, bubY+bh2/2);
-          rec.bubbGfx.endFill();
-          rec.bubbSpr.x = 0; rec.bubbSpr.y = bubY; rec.bubbSpr.alpha = eAlpha;
+          rec.bubSpr.visible = true;
+          rec.bubSpr.x     = h.wx;
+          rec.bubSpr.y     = h.wy - HEX_SIZE * 0.82 - bob - bd.bh / 2; // anchor(0.5,0) = top-center
+          rec.bubSpr.alpha = eAlpha * alpha;
+        } else {
+          rec.bubSpr.visible = false;
         }
       }
 

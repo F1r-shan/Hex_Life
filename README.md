@@ -9,9 +9,10 @@ No build step. No server. No dependencies. Open `index.html` and it runs.
 ## Getting Started
 
 1. Open `index.html` in any modern browser
-2. Click **▶ Start** on the menu
-3. Tap **+ Add Human** then click a hex to place people
-4. Watch what happens
+2. Click **▶ Start** on the menu — or click **? How to Play** for an in-game tutorial
+3. Type a seed and click **Generate** (or press Enter), or leave it blank for a random world
+4. Click **+ Add Human** then click a hex to place people
+5. Watch what happens
 
 ---
 
@@ -24,6 +25,7 @@ No build step. No server. No dependencies. Open `index.html` and it runs.
 | Scroll wheel | Zoom in / out |
 | Click + drag | Pan camera |
 | Click label | Rename a settlement |
+| **Esc** | Cancel placement or painting |
 
 ### Mobile
 
@@ -50,8 +52,6 @@ The **Controls** panel lives top-right. On mobile it auto-collapses — tap **�
 | **🖊 Paint Terrain** | Select a terrain type and drag to reshape land |
 | **⏸ / ▶** | Pause / resume |
 | **½× 1× 2× 5×** | Simulation speed |
-
-Press **Esc** to cancel placement or painting.
 
 Click any **settlement label** to rename it.
 
@@ -108,6 +108,14 @@ Neighboring zones interact automatically:
 
 ---
 
+## Performance
+
+- **LOD** — humans, love lines, and emotion bubbles are hidden when zoomed out past a threshold (scale < 0.35). Only zones, buildings, war particles, and settlement labels remain visible. Everything reappears when you zoom back in.
+- **Spatial grid** — rebuilt each frame so range queries (love, births, war absorption) run in O(1) instead of O(n²).
+- **Pre-baked textures** — human emoji, age badges, and emotion bubbles are rendered to cached GPU textures once and reused every frame.
+
+---
+
 ## Files
 
 | Path | Contents |
@@ -119,4 +127,4 @@ Neighboring zones interact automatically:
 | `js/zones.js` | Buildings, zones, alliances, wars (data), eras |
 | `js/simulation.js` | `updateHumans` — spatial grid, war particles, zone splitting |
 | `js/render.js` | Camera, PixiJS scene graph, `drawGrid`, animation loop |
-| `js/ui.js` | Main menu, seed panel, terraform, zoom, pan, touch, panel toggle |
+| `js/ui.js` | Main menu, help modal, seed panel, terraform, zoom, pan, touch, panel toggle |
