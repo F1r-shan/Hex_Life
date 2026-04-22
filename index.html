@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Hexagon Grid</title>
   <link rel="stylesheet" href="styles.css">
   <script src="pixi.min.js"></script>
@@ -34,11 +34,11 @@
       <div class="help-col-right">
         <h3>Controls</h3>
         <table>
-          <tr><td>Scroll / Pinch</td><td>Zoom in &amp; out</td></tr>
-          <tr><td>Drag</td><td>Pan the camera</td></tr>
-          <tr><td>Click a label</td><td>Zone stats / rename</td></tr>
-          <tr><td>Esc</td><td>Cancel placement / painting</td></tr>
-          <tr><td>Ctrl+Z</td><td>Undo terrain paint</td></tr>
+          <tr><td id="help-zoom-key">Scroll / Pinch</td><td>Zoom in &amp; out</td></tr>
+          <tr><td id="help-pan-key">Drag</td><td>Pan the camera</td></tr>
+          <tr><td id="help-label-key">Click a label</td><td>Zone stats / rename</td></tr>
+          <tr id="help-esc-row"><td>Esc</td><td>Cancel placement / painting</td></tr>
+          <tr id="help-undo-row"><td>Ctrl+Z</td><td>Undo terrain paint</td></tr>
         </table>
         <h3>Terrain</h3>
         <p>🌿 Grass &nbsp;🏖️ Sand &nbsp;🪨 Rock are walkable.<br>🌊 Water &nbsp;❌ Blocked are not.<br>Use <b>🖊 Paint Terrain</b> to reshape.</p>

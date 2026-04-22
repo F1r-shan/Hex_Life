@@ -113,14 +113,18 @@
         menuRaf = requestAnimationFrame(drawMenuFrame);
       }
 
+      function _onMenuResize() { resizeMenuCanvas(); }
+      function _onMenuOrientation() { setTimeout(resizeMenuCanvas, 300); }
       resizeMenuCanvas();
-      window.addEventListener('resize', resizeMenuCanvas);
+      window.addEventListener('resize', _onMenuResize);
+      window.addEventListener('orientationchange', _onMenuOrientation);
       menuRaf = requestAnimationFrame(drawMenuFrame);
 
       startBtn.addEventListener('click', () => {
         menu.classList.add('hidden');
         cancelAnimationFrame(menuRaf);
-        window.removeEventListener('resize', resizeMenuCanvas);
+        window.removeEventListener('resize', _onMenuResize);
+        window.removeEventListener('orientationchange', _onMenuOrientation);
         const panels = document.getElementById('right-panels');
         panels.style.opacity = '1';
         panels.style.pointerEvents = 'auto';
@@ -373,9 +377,11 @@
     }, { passive: false });
     canvas.addEventListener('touchend', () => { isDragging = false; lastTouchDist = null; });
 
-    window.addEventListener('resize', () => {
+    function _resizeRenderer() {
       app.renderer.resize(window.innerWidth, window.innerHeight);
-    });
+    }
+    window.addEventListener('resize', _resizeRenderer);
+    window.addEventListener('orientationchange', () => setTimeout(_resizeRenderer, 300));
 
     // ── Zone stats popup ─────────────────────────────────────
     let _zspClusterId = null;
@@ -494,4 +500,15 @@
       openBtn.addEventListener('click',  () => modal.classList.remove('hidden'));
       closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
       modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); });
+
+      // Swap controls table for touch devices
+      if (window.matchMedia('(pointer: coarse)').matches) {
+        document.getElementById('help-zoom-key').textContent  = '2-finger pinch';
+        document.getElementById('help-pan-key').textContent   = '1-finger drag';
+        document.getElementById('help-label-key').textContent = 'Tap a label';
+        const escRow  = document.getElementById('help-esc-row');
+        const undoRow = document.getElementById('help-undo-row');
+        escRow.cells[0].textContent  = 'Esc / back button';
+        undoRow.cells[0].textContent = 'Undo (Ctrl+Z)';
+      }
     })();
